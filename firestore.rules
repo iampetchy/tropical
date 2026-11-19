@@ -1,0 +1,338 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Global Hardened Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'chonlaros@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isActiveStaff() {
+      return isVerifiedUser() && (
+        isAdmin() ||
+        (
+          exists(/databases/$(database)/documents/staff/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.active == true
+        )
+      );
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidResortSettings(data) {
+      return data.keys().hasAll([
+          'resortName', 'resortSubtitle', 'checkInTime', 'checkOutTime',
+          'updatedAt', 'updatedByUid', 'updatedByName'
+        ]) &&
+        data.keys().hasOnly([
+          'resortName', 'resortSubtitle', 'checkInTime', 'checkOutTime',
+          'updatedAt', 'updatedByUid', 'updatedByName'
+        ]) &&
+        data.resortName is string && data.resortName.size() >= 1 && data.resortName.size() <= 120 &&
+        data.resortSubtitle is string && data.resortSubtitle.size() <= 160 &&
+        data.checkInTime is string && data.checkInTime.size() >= 1 && data.checkInTime.size() <= 20 &&
+        data.checkOutTime is string && data.checkOutTime.size() >= 1 && data.checkOutTime.size() <= 20 &&
+        data.updatedAt is timestamp &&
+        data.updatedByUid is string && data.updatedByUid == request.auth.uid && data.updatedByUid.size() <= 128 &&
+        data.updatedByName is string && data.updatedByName.size() >= 1 && data.updatedByName.size() <= 100;
+    }
+
+    function isValidRoom(data) {
+      return data.keys().hasAll([
+          'resortId', 'name', 'roomType', 'capacity', 'sortOrder',
+          'isActive', 'createdAt', 'updatedAt', 'updatedByUid'
+        ]) &&
+        data.keys().hasOnly([
+          'resortId', 'name', 'roomType', 'capacity', 'sortOrder',
+          'isActive', 'createdAt', 'updatedAt', 'updatedByUid'
+        ]) &&
+        data.resortId is string && data.resortId == 'main' && data.resortId.size() <= 16 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 60 &&
+        data.roomType is string && data.roomType.size() >= 1 && data.roomType.size() <= 60 &&
+        data.capacity is int && data.capacity >= 1 && data.capacity <= 20 &&
+        data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 1000 &&
+        data.isActive is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.updatedByUid is string && data.updatedByUid == request.auth.uid && data.updatedByUid.size() <= 128;
+    }
+
+    function isValidBooking(data) {
+      return data.keys().hasAll([
+          'resortId', 'checkIn', 'checkOut', 'roomIds', 'roomNames',
+          'category', 'mealBreakfast', 'mealDinner', 'mealSetsCount', 'mealNotes',
+          'guestName', 'guestPhone', 'bookingChannel', 'specialRequest',
+          'paymentStatus', 'status', 'createdByUid', 'createdByName', 'createdAt',
+          'updatedByUid', 'updatedByName', 'updatedAt', 'cancelledByName'
+        ]) &&
+        data.keys().hasOnly([
+          'resortId', 'checkIn', 'checkOut', 'roomIds', 'roomNames',
+          'category', 'mealBreakfast', 'mealDinner', 'mealSetsCount', 'mealNotes',
+          'guestName', 'guestPhone', 'bookingChannel', 'specialRequest',
+          'paymentStatus', 'status', 'createdByUid', 'createdByName', 'createdAt',
+          'updatedByUid', 'updatedByName', 'updatedAt', 'cancelledByName'
+        ]) &&
+        data.resortId is string && data.resortId == 'main' && data.resortId.size() <= 16 &&
+        data.checkIn is string && data.checkIn.size() == 10 && data.checkIn.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+        data.checkOut is string && data.checkOut.size() == 10 && data.checkOut.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+        data.checkOut > data.checkIn &&
+        data.roomIds is list && data.roomIds.size() >= 1 && data.roomIds.size() <= 20 && data.roomIds[0] is string &&
+        data.roomNames is list && data.roomNames.size() >= 1 && data.roomNames.size() <= 20 && data.roomNames[0] is string &&
+        data.roomIds.size() == data.roomNames.size() &&
+        data.category is string && data.category in ['room_only', 'room_with_meal'] && data.category.size() <= 32 &&
+        data.mealBreakfast is string && data.mealBreakfast.size() <= 100 &&
+        data.mealDinner is string && data.mealDinner.size() <= 100 &&
+        data.mealSetsCount is int && data.mealSetsCount >= 0 && data.mealSetsCount <= 100 &&
+        data.mealNotes is string && data.mealNotes.size() <= 500 &&
+        data.guestName is string && data.guestName.size() >= 1 && data.guestName.size() <= 120 &&
+        data.guestPhone is string && data.guestPhone.size() >= 1 && data.guestPhone.size() <= 40 &&
+        data.bookingChannel is string && data.bookingChannel.size() >= 1 && data.bookingChannel.size() <= 60 &&
+        data.specialRequest is string && data.specialRequest.size() <= 1000 &&
+        data.paymentStatus is string && data.paymentStatus in ['pending', 'deposit', 'paid'] && data.paymentStatus.size() <= 20 &&
+        data.status is string && data.status in ['confirmed', 'cancelled'] && data.status.size() <= 20 &&
+        data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128 &&
+        data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 100 &&
+        data.createdAt is timestamp &&
+        data.updatedByUid is string && data.updatedByUid == request.auth.uid && data.updatedByUid.size() <= 128 &&
+        data.updatedByName is string && data.updatedByName.size() >= 1 && data.updatedByName.size() <= 100 &&
+        data.updatedAt is timestamp &&
+        data.cancelledByName is string && data.cancelledByName.size() <= 100;
+    }
+
+    function isValidRoomLock(data) {
+      return data.keys().hasAll([
+          'resortId', 'roomId', 'date', 'bookingId', 'createdByUid', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'resortId', 'roomId', 'date', 'bookingId', 'createdByUid', 'createdAt'
+        ]) &&
+        data.resortId is string && data.resortId == 'main' && data.resortId.size() <= 16 &&
+        isValidId(data.roomId) &&
+        data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+        isValidId(data.bookingId) &&
+        data.createdByUid is string && data.createdByUid == request.auth.uid && data.createdByUid.size() <= 128 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidStaffProfile(data) {
+      return data.keys().hasAll([
+          'uid', 'displayName', 'role', 'active', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'displayName', 'role', 'active', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.uid) &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+        data.role is string && data.role in ['admin', 'staff'] && data.role.size() <= 20 &&
+        data.active is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidStaffPrivateInfo(data) {
+      return data.keys().hasAll(['email', 'updatedAt']) &&
+        data.keys().hasOnly(['email', 'updatedAt']) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.updatedAt is timestamp;
+    }
+
+    // 4. Collection Rules
+    match /resortSettings/{settingId} {
+      allow get: if isActiveStaff() && isValidId(settingId) && settingId == 'main';
+      allow list: if false;
+      allow create: if isActiveStaff() &&
+        isValidId(settingId) &&
+        settingId == 'main' &&
+        isValidResortSettings(incoming()) &&
+        incoming().updatedAt == request.time;
+      allow update: if isActiveStaff() &&
+        isValidId(settingId) &&
+        settingId == 'main' &&
+        isValidResortSettings(incoming()) &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'resortName', 'resortSubtitle', 'checkInTime', 'checkOutTime',
+          'updatedAt', 'updatedByUid', 'updatedByName'
+        ]);
+      allow delete: if false;
+    }
+
+    match /rooms/{roomId} {
+      allow get: if isActiveStaff() && isValidId(roomId);
+      allow list: if isVerifiedUser() && resource.data.resortId == 'main';
+      allow create: if isActiveStaff() &&
+        isValidId(roomId) &&
+        isValidRoom(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isActiveStaff() &&
+        isValidId(roomId) &&
+        isValidRoom(incoming()) &&
+        incoming().resortId == existing().resortId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'roomType', 'capacity', 'sortOrder', 'isActive', 'updatedAt', 'updatedByUid'
+        ]);
+      allow delete: if isActiveStaff() && isValidId(roomId);
+    }
+
+    match /bookings/{bookingId} {
+      allow get: if isActiveStaff() && isValidId(bookingId);
+      allow list: if isVerifiedUser() && resource.data.resortId == 'main';
+      allow create: if isActiveStaff() &&
+        isValidId(bookingId) &&
+        isValidBooking(incoming()) &&
+        incoming().createdByUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        incoming().status == 'confirmed' &&
+        incoming().cancelledByName == '';
+      allow update: if isActiveStaff() &&
+        isValidId(bookingId) &&
+        isValidBooking(incoming()) &&
+        incoming().resortId == existing().resortId &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdByName == existing().createdByName &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (existing().status != 'cancelled' || isAdmin()) &&
+        (
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'checkIn', 'checkOut', 'roomIds', 'roomNames', 'category',
+              'mealBreakfast', 'mealDinner', 'mealSetsCount', 'mealNotes',
+              'guestName', 'guestPhone', 'bookingChannel', 'specialRequest',
+              'paymentStatus', 'status', 'cancelledByName',
+              'updatedByUid', 'updatedByName', 'updatedAt'
+            ])
+          ) ||
+          (
+            existing().status == 'confirmed' &&
+            incoming().status == 'confirmed' &&
+            incoming().cancelledByName == '' &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'checkIn', 'checkOut', 'roomIds', 'roomNames', 'category',
+              'mealBreakfast', 'mealDinner', 'mealSetsCount', 'mealNotes',
+              'guestName', 'guestPhone', 'bookingChannel', 'specialRequest',
+              'paymentStatus', 'updatedByUid', 'updatedByName', 'updatedAt'
+            ])
+          ) ||
+          (
+            existing().status == 'confirmed' &&
+            incoming().status == 'cancelled' &&
+            incoming().cancelledByName.size() >= 1 &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'cancelledByName', 'updatedByUid', 'updatedByName', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if false;
+    }
+
+    match /roomLocks/{lockId} {
+      allow get: if isActiveStaff() && isValidId(lockId);
+      allow list: if isVerifiedUser() && resource.data.resortId == 'main';
+      allow create: if isActiveStaff() &&
+        isValidId(lockId) &&
+        isValidRoomLock(incoming()) &&
+        incoming().createdAt == request.time &&
+        existsAfter(/databases/$(database)/documents/bookings/$(incoming().bookingId));
+      allow update: if false;
+      allow delete: if isActiveStaff() &&
+        isValidId(lockId) &&
+        (
+          getAfter(/databases/$(database)/documents/bookings/$(existing().bookingId)).data.status == 'cancelled' ||
+          getAfter(/databases/$(database)/documents/bookings/$(existing().bookingId)).data.updatedAt == request.time
+        );
+    }
+
+    match /staff/{uid} {
+      allow get: if isVerifiedUser() && isValidId(uid) && (request.auth.uid == uid || isActiveStaff());
+      allow list: if isVerifiedUser() && resource.data.active == true;
+      allow create: if isVerifiedUser() &&
+        isValidId(uid) &&
+        isValidStaffProfile(incoming()) &&
+        incoming().uid == uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (
+          (request.auth.uid == uid && incoming().role == 'staff' && incoming().active == true) ||
+          isAdmin()
+        );
+      allow update: if isVerifiedUser() &&
+        isValidId(uid) &&
+        isValidStaffProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (
+            request.auth.uid == uid &&
+            incoming().role == existing().role &&
+            incoming().active == existing().active &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'updatedAt'])
+          ) ||
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'role', 'active', 'updatedAt'])
+          )
+        );
+      allow delete: if false;
+
+      match /private/{docId} {
+        allow get: if isVerifiedUser() && isValidId(uid) && isValidId(docId) && (request.auth.uid == uid || isAdmin());
+        allow list: if false;
+        allow create: if isVerifiedUser() &&
+          isValidId(uid) &&
+          isValidId(docId) &&
+          docId == 'info' &&
+          (request.auth.uid == uid || isAdmin()) &&
+          isValidStaffPrivateInfo(incoming()) &&
+          incoming().updatedAt == request.time;
+        allow update: if isVerifiedUser() &&
+          isValidId(uid) &&
+          isValidId(docId) &&
+          docId == 'info' &&
+          (request.auth.uid == uid || isAdmin()) &&
+          isValidStaffPrivateInfo(incoming()) &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
+        allow delete: if false;
+      }
+    }
+
+    match /admins/{uid} {
+      allow get: if isVerifiedUser() && isValidId(uid) && (request.auth.uid == uid || isAdmin());
+      allow list: if false;
+      allow write: if false;
+    }
+  }
+}

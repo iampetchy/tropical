@@ -1,0 +1,6 @@
+{
+  "name": "ResortRoom — ระบบจัดการห้องพักและปฏิทินการจองรีสอร์ท",
+  "description": "ระบบจัดการและเช็กสถานะห้องว่างของรีสอร์ทแบบ Real-time สำหรับทีมงาน แสดงปฏิทินรายเดือน พร้อมระบบป้องกันการจองชนกัน",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
