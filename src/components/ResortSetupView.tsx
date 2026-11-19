@@ -6,8 +6,16 @@ import {
   Plus,
   Save,
   Trash2,
+  Utensils,
+  X,
 } from 'lucide-react';
-import type { Booking, ResortSettings, Room } from '../types/resort';
+import {
+  DEFAULT_BREAKFAST_OPTIONS,
+  DEFAULT_DINNER_OPTIONS,
+  type Booking,
+  type ResortSettings,
+  type Room,
+} from '../types/resort';
 
 interface ResortSetupViewProps {
   settings: ResortSettings | null;
@@ -18,6 +26,8 @@ interface ResortSetupViewProps {
     resortSubtitle: string;
     checkInTime: string;
     checkOutTime: string;
+    breakfastOptions: string[];
+    dinnerOptions: string[];
   }) => Promise<void>;
   onSaveRoom: (
     input: {
@@ -44,6 +54,18 @@ export const ResortSetupView: React.FC<ResortSetupViewProps> = ({
   const [resortSubtitle, setResortSubtitle] = useState(settings?.resortSubtitle || '');
   const [checkInTime, setCheckInTime] = useState(settings?.checkInTime || '14:00');
   const [checkOutTime, setCheckOutTime] = useState(settings?.checkOutTime || '12:00');
+  const [breakfastOptions, setBreakfastOptions] = useState<string[]>(
+    settings?.breakfastOptions && settings.breakfastOptions.length > 0
+      ? settings.breakfastOptions
+      : DEFAULT_BREAKFAST_OPTIONS,
+  );
+  const [dinnerOptions, setDinnerOptions] = useState<string[]>(
+    settings?.dinnerOptions && settings.dinnerOptions.length > 0
+      ? settings.dinnerOptions
+      : DEFAULT_DINNER_OPTIONS,
+  );
+  const [newBreakfastInput, setNewBreakfastInput] = useState('');
+  const [newDinnerInput, setNewDinnerInput] = useState('');
   const [savingSettings, setSavingSettings] = useState(false);
 
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
@@ -62,6 +84,16 @@ export const ResortSetupView: React.FC<ResortSetupViewProps> = ({
       setResortSubtitle(settings.resortSubtitle);
       setCheckInTime(settings.checkInTime);
       setCheckOutTime(settings.checkOutTime);
+      setBreakfastOptions(
+        settings.breakfastOptions && settings.breakfastOptions.length > 0
+          ? settings.breakfastOptions
+          : DEFAULT_BREAKFAST_OPTIONS,
+      );
+      setDinnerOptions(
+        settings.dinnerOptions && settings.dinnerOptions.length > 0
+          ? settings.dinnerOptions
+          : DEFAULT_DINNER_OPTIONS,
+      );
     }
   }, [settings]);
 
@@ -78,10 +110,78 @@ export const ResortSetupView: React.FC<ResortSetupViewProps> = ({
         resortSubtitle,
         checkInTime,
         checkOutTime,
+        breakfastOptions,
+        dinnerOptions,
       });
     } finally {
       setSavingSettings(false);
     }
+  };
+
+  const handleAddBreakfastOption = async () => {
+    const clean = newBreakfastInput.trim();
+    if (!clean) return;
+    if (breakfastOptions.includes(clean)) {
+      setNewBreakfastInput('');
+      return;
+    }
+    const next = [...breakfastOptions, clean].slice(0, 30);
+    setBreakfastOptions(next);
+    setNewBreakfastInput('');
+    await onSaveSettings({
+      resortName,
+      resortSubtitle,
+      checkInTime,
+      checkOutTime,
+      breakfastOptions: next,
+      dinnerOptions,
+    });
+  };
+
+  const handleRemoveBreakfastOption = async (item: string) => {
+    const next = breakfastOptions.filter((x) => x !== item);
+    setBreakfastOptions(next);
+    await onSaveSettings({
+      resortName,
+      resortSubtitle,
+      checkInTime,
+      checkOutTime,
+      breakfastOptions: next,
+      dinnerOptions,
+    });
+  };
+
+  const handleAddDinnerOption = async () => {
+    const clean = newDinnerInput.trim();
+    if (!clean) return;
+    if (dinnerOptions.includes(clean)) {
+      setNewDinnerInput('');
+      return;
+    }
+    const next = [...dinnerOptions, clean].slice(0, 30);
+    setDinnerOptions(next);
+    setNewDinnerInput('');
+    await onSaveSettings({
+      resortName,
+      resortSubtitle,
+      checkInTime,
+      checkOutTime,
+      breakfastOptions,
+      dinnerOptions: next,
+    });
+  };
+
+  const handleRemoveDinnerOption = async (item: string) => {
+    const next = dinnerOptions.filter((x) => x !== item);
+    setDinnerOptions(next);
+    await onSaveSettings({
+      resortName,
+      resortSubtitle,
+      checkInTime,
+      checkOutTime,
+      breakfastOptions,
+      dinnerOptions: next,
+    });
   };
 
   const resetRoomForm = () => {
@@ -158,7 +258,7 @@ export const ResortSetupView: React.FC<ResortSetupViewProps> = ({
           <div>
             <h2 className="text-base font-bold text-slate-900">ข้อมูลพื้นฐานของรีสอร์ท</h2>
             <p className="text-xs text-slate-500">
-              ชื่อรีสอร์ทและเวลา Check-in / Check-out มาตรฐาน
+              ชื่อรีสอร์ท (แสดงบน Header หน้าแรก) และเวลา Check-in / Check-out มาตรฐาน
             </p>
           </div>
         </div>
@@ -236,9 +336,131 @@ export const ResortSetupView: React.FC<ResortSetupViewProps> = ({
         </div>
       </form>
 
-      {/* Section 2: Rooms Inventory Management */}
+      {/* Section 2: Customizable Breakfast & Dinner Options */}
+      <div className="bg-white border border-slate-200 rounded-xl p-5 sm:p-6 space-y-5">
+        <div className="flex items-center gap-2.5 pb-3 border-b border-slate-100">
+          <Utensils className="w-5 h-5 text-orange-600" />
+          <div>
+            <h2 className="text-base font-bold text-slate-900">
+              จัดการรายการอาหารเช้าและอาหารเย็น
+            </h2>
+            <p className="text-xs text-slate-500">
+              รายการเหล่านี้จะแสดงเป็นตัวเลือก Check Box ในฟอร์มบันทึกการจอง
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Breakfast Options Editor */}
+          <div className="space-y-3">
+            <h3 className="text-sm font-semibold text-slate-900">
+              รายการอาหารเช้า ({breakfastOptions.length} รายการ)
+            </h3>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                maxLength={80}
+                value={newBreakfastInput}
+                onChange={(e) => setNewBreakfastInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void handleAddBreakfastOption();
+                  }
+                }}
+                placeholder="เพิ่มเมนูอาหารเช้า เช่น ข้าวเหนียวหมูปิ้ง"
+                className="flex-1 min-h-[42px] px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-600"
+              />
+              <button
+                type="button"
+                onClick={() => void handleAddBreakfastOption()}
+                className="min-h-[42px] inline-flex items-center gap-1.5 px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white text-sm font-medium rounded-lg whitespace-nowrap transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                เพิ่ม
+              </button>
+            </div>
+            <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
+              {breakfastOptions.length === 0 ? (
+                <div className="p-3 text-xs text-slate-500">ยังไม่มีรายการอาหารเช้า</div>
+              ) : (
+                breakfastOptions.map((item) => (
+                  <div
+                    key={item}
+                    className="px-3.5 py-2.5 bg-white flex items-center justify-between gap-2 text-sm text-slate-800"
+                  >
+                    <span className="truncate">{item}</span>
+                    <button
+                      type="button"
+                      onClick={() => void handleRemoveBreakfastOption(item)}
+                      aria-label={`ลบ ${item}`}
+                      className="p-1.5 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Dinner Options Editor */}
+          <div className="space-y-3">
+            <h3 className="text-sm font-semibold text-slate-900">
+              รายการอาหารเย็น ({dinnerOptions.length} รายการ)
+            </h3>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                maxLength={80}
+                value={newDinnerInput}
+                onChange={(e) => setNewDinnerInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void handleAddDinnerOption();
+                  }
+                }}
+                placeholder="เพิ่มเมนูอาหารเย็น เช่น ชาบูเซ็ตพิเศษ"
+                className="flex-1 min-h-[42px] px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-600"
+              />
+              <button
+                type="button"
+                onClick={() => void handleAddDinnerOption()}
+                className="min-h-[42px] inline-flex items-center gap-1.5 px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white text-sm font-medium rounded-lg whitespace-nowrap transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                เพิ่ม
+              </button>
+            </div>
+            <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
+              {dinnerOptions.length === 0 ? (
+                <div className="p-3 text-xs text-slate-500">ยังไม่มีรายการอาหารเย็น</div>
+              ) : (
+                dinnerOptions.map((item) => (
+                  <div
+                    key={item}
+                    className="px-3.5 py-2.5 bg-white flex items-center justify-between gap-2 text-sm text-slate-800"
+                  >
+                    <span className="truncate">{item}</span>
+                    <button
+                      type="button"
+                      onClick={() => void handleRemoveDinnerOption(item)}
+                      aria-label={`ลบ ${item}`}
+                      className="p-1.5 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Section 3: Rooms Inventory Management */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
-        {/* Room Form */}
         <form
           onSubmit={handleRoomSubmit}
           className="bg-white border border-slate-200 rounded-xl p-5 space-y-4"
@@ -352,7 +574,6 @@ export const ResortSetupView: React.FC<ResortSetupViewProps> = ({
           </div>
         </form>
 
-        {/* Rooms List */}
         <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
             <h3 className="text-base font-bold text-slate-900">

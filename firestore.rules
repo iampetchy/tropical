@@ -48,16 +48,22 @@ service cloud.firestore {
     function isValidResortSettings(data) {
       return data.keys().hasAll([
           'resortName', 'resortSubtitle', 'checkInTime', 'checkOutTime',
+          'breakfastOptions', 'dinnerOptions',
           'updatedAt', 'updatedByUid', 'updatedByName'
         ]) &&
         data.keys().hasOnly([
           'resortName', 'resortSubtitle', 'checkInTime', 'checkOutTime',
+          'breakfastOptions', 'dinnerOptions',
           'updatedAt', 'updatedByUid', 'updatedByName'
         ]) &&
         data.resortName is string && data.resortName.size() >= 1 && data.resortName.size() <= 120 &&
         data.resortSubtitle is string && data.resortSubtitle.size() <= 160 &&
         data.checkInTime is string && data.checkInTime.size() >= 1 && data.checkInTime.size() <= 20 &&
         data.checkOutTime is string && data.checkOutTime.size() >= 1 && data.checkOutTime.size() <= 20 &&
+        data.breakfastOptions is list && data.breakfastOptions.size() <= 30 &&
+        (data.breakfastOptions.size() == 0 || data.breakfastOptions[0] is string) &&
+        data.dinnerOptions is list && data.dinnerOptions.size() <= 30 &&
+        (data.dinnerOptions.size() == 0 || data.dinnerOptions[0] is string) &&
         data.updatedAt is timestamp &&
         data.updatedByUid is string && data.updatedByUid == request.auth.uid && data.updatedByUid.size() <= 128 &&
         data.updatedByName is string && data.updatedByName.size() >= 1 && data.updatedByName.size() <= 100;
@@ -86,14 +92,16 @@ service cloud.firestore {
     function isValidBooking(data) {
       return data.keys().hasAll([
           'resortId', 'checkIn', 'checkOut', 'roomIds', 'roomNames',
-          'category', 'mealBreakfast', 'mealDinner', 'mealSetsCount', 'mealNotes',
+          'mealBreakfastItems', 'mealDinnerItems', 'mealSetsCount', 'mealNotes',
+          'extraBed', 'extraBedCount',
           'guestName', 'guestPhone', 'bookingChannel', 'specialRequest',
           'paymentStatus', 'status', 'createdByUid', 'createdByName', 'createdAt',
           'updatedByUid', 'updatedByName', 'updatedAt', 'cancelledByName'
         ]) &&
         data.keys().hasOnly([
           'resortId', 'checkIn', 'checkOut', 'roomIds', 'roomNames',
-          'category', 'mealBreakfast', 'mealDinner', 'mealSetsCount', 'mealNotes',
+          'mealBreakfastItems', 'mealDinnerItems', 'mealSetsCount', 'mealNotes',
+          'extraBed', 'extraBedCount',
           'guestName', 'guestPhone', 'bookingChannel', 'specialRequest',
           'paymentStatus', 'status', 'createdByUid', 'createdByName', 'createdAt',
           'updatedByUid', 'updatedByName', 'updatedAt', 'cancelledByName'
@@ -105,11 +113,15 @@ service cloud.firestore {
         data.roomIds is list && data.roomIds.size() >= 1 && data.roomIds.size() <= 20 && data.roomIds[0] is string &&
         data.roomNames is list && data.roomNames.size() >= 1 && data.roomNames.size() <= 20 && data.roomNames[0] is string &&
         data.roomIds.size() == data.roomNames.size() &&
-        data.category is string && data.category in ['room_only', 'room_with_meal'] && data.category.size() <= 32 &&
-        data.mealBreakfast is string && data.mealBreakfast.size() <= 100 &&
-        data.mealDinner is string && data.mealDinner.size() <= 100 &&
+        data.mealBreakfastItems is list && data.mealBreakfastItems.size() <= 30 &&
+        (data.mealBreakfastItems.size() == 0 || data.mealBreakfastItems[0] is string) &&
+        data.mealDinnerItems is list && data.mealDinnerItems.size() <= 30 &&
+        (data.mealDinnerItems.size() == 0 || data.mealDinnerItems[0] is string) &&
         data.mealSetsCount is int && data.mealSetsCount >= 0 && data.mealSetsCount <= 100 &&
         data.mealNotes is string && data.mealNotes.size() <= 500 &&
+        data.extraBed is bool &&
+        data.extraBedCount is int &&
+        ((data.extraBed == false && data.extraBedCount == 0) || (data.extraBed == true && data.extraBedCount in [1, 2])) &&
         data.guestName is string && data.guestName.size() >= 1 && data.guestName.size() <= 120 &&
         data.guestPhone is string && data.guestPhone.size() >= 1 && data.guestPhone.size() <= 40 &&
         data.bookingChannel is string && data.bookingChannel.size() >= 1 && data.bookingChannel.size() <= 60 &&
@@ -163,8 +175,9 @@ service cloud.firestore {
     }
 
     // 4. Collection Rules
+    // Publicly readable non-PII resort name & room inventory & room availability locks for Landing Page calendar
     match /resortSettings/{settingId} {
-      allow get: if isActiveStaff() && isValidId(settingId) && settingId == 'main';
+      allow get: if isValidId(settingId) && settingId == 'main';
       allow list: if false;
       allow create: if isActiveStaff() &&
         isValidId(settingId) &&
@@ -178,14 +191,15 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         incoming().diff(existing()).affectedKeys().hasOnly([
           'resortName', 'resortSubtitle', 'checkInTime', 'checkOutTime',
+          'breakfastOptions', 'dinnerOptions',
           'updatedAt', 'updatedByUid', 'updatedByName'
         ]);
       allow delete: if false;
     }
 
     match /rooms/{roomId} {
-      allow get: if isActiveStaff() && isValidId(roomId);
-      allow list: if isVerifiedUser() && resource.data.resortId == 'main';
+      allow get: if isValidId(roomId);
+      allow list: if resource.data.resortId == 'main';
       allow create: if isActiveStaff() &&
         isValidId(roomId) &&
         isValidRoom(incoming()) &&
@@ -203,6 +217,24 @@ service cloud.firestore {
       allow delete: if isActiveStaff() && isValidId(roomId);
     }
 
+    match /roomLocks/{lockId} {
+      allow get: if isValidId(lockId);
+      allow list: if resource.data.resortId == 'main';
+      allow create: if isActiveStaff() &&
+        isValidId(lockId) &&
+        isValidRoomLock(incoming()) &&
+        incoming().createdAt == request.time &&
+        existsAfter(/databases/$(database)/documents/bookings/$(incoming().bookingId));
+      allow update: if false;
+      allow delete: if isActiveStaff() &&
+        isValidId(lockId) &&
+        (
+          getAfter(/databases/$(database)/documents/bookings/$(existing().bookingId)).data.status == 'cancelled' ||
+          getAfter(/databases/$(database)/documents/bookings/$(existing().bookingId)).data.updatedAt == request.time
+        );
+    }
+
+    // Bookings contain guest PII (name, phone, requests): strictly active staff only
     match /bookings/{bookingId} {
       allow get: if isActiveStaff() && isValidId(bookingId);
       allow list: if isVerifiedUser() && resource.data.resortId == 'main';
@@ -227,11 +259,13 @@ service cloud.firestore {
           (
             isAdmin() &&
             incoming().diff(existing()).affectedKeys().hasOnly([
-              'checkIn', 'checkOut', 'roomIds', 'roomNames', 'category',
-              'mealBreakfast', 'mealDinner', 'mealSetsCount', 'mealNotes',
+              'checkIn', 'checkOut', 'roomIds', 'roomNames',
+              'mealBreakfastItems', 'mealDinnerItems', 'mealSetsCount', 'mealNotes',
+              'extraBed', 'extraBedCount',
               'guestName', 'guestPhone', 'bookingChannel', 'specialRequest',
               'paymentStatus', 'status', 'cancelledByName',
-              'updatedByUid', 'updatedByName', 'updatedAt'
+              'updatedByUid', 'updatedByName', 'updatedAt',
+              'category', 'mealBreakfast', 'mealDinner'
             ])
           ) ||
           (
@@ -239,10 +273,12 @@ service cloud.firestore {
             incoming().status == 'confirmed' &&
             incoming().cancelledByName == '' &&
             incoming().diff(existing()).affectedKeys().hasOnly([
-              'checkIn', 'checkOut', 'roomIds', 'roomNames', 'category',
-              'mealBreakfast', 'mealDinner', 'mealSetsCount', 'mealNotes',
+              'checkIn', 'checkOut', 'roomIds', 'roomNames',
+              'mealBreakfastItems', 'mealDinnerItems', 'mealSetsCount', 'mealNotes',
+              'extraBed', 'extraBedCount',
               'guestName', 'guestPhone', 'bookingChannel', 'specialRequest',
-              'paymentStatus', 'updatedByUid', 'updatedByName', 'updatedAt'
+              'paymentStatus', 'updatedByUid', 'updatedByName', 'updatedAt',
+              'category', 'mealBreakfast', 'mealDinner'
             ])
           ) ||
           (
@@ -255,23 +291,6 @@ service cloud.firestore {
           )
         );
       allow delete: if false;
-    }
-
-    match /roomLocks/{lockId} {
-      allow get: if isActiveStaff() && isValidId(lockId);
-      allow list: if isVerifiedUser() && resource.data.resortId == 'main';
-      allow create: if isActiveStaff() &&
-        isValidId(lockId) &&
-        isValidRoomLock(incoming()) &&
-        incoming().createdAt == request.time &&
-        existsAfter(/databases/$(database)/documents/bookings/$(incoming().bookingId));
-      allow update: if false;
-      allow delete: if isActiveStaff() &&
-        isValidId(lockId) &&
-        (
-          getAfter(/databases/$(database)/documents/bookings/$(existing().bookingId)).data.status == 'cancelled' ||
-          getAfter(/databases/$(database)/documents/bookings/$(existing().bookingId)).data.updatedAt == request.time
-        );
     }
 
     match /staff/{uid} {

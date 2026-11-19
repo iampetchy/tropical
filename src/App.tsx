@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, signOut, type User } from 'firebase/auth';
 import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
 import {
@@ -6,6 +6,7 @@ import {
   CalendarDays,
   CheckCircle2,
   ClipboardList,
+  LogIn,
   LogOut,
   Menu,
   Plus,
@@ -33,11 +34,14 @@ import {
   upsertRoom,
 } from './services/resortService';
 import {
+  DEFAULT_RESORT_SEED,
+  DEFAULT_ROOMS_SEED,
   RESORT_ID,
   type Booking,
   type BookingFormInput,
   type ResortSettings,
   type Room,
+  type RoomLock,
   type StaffProfile,
 } from './types/resort';
 
@@ -52,13 +56,19 @@ function ResortWorkspace() {
 
   const [settings, setSettings] = useState<ResortSettings | null>(null);
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [roomLocks, setRoomLocks] = useState<RoomLock[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
-  const [dataLoading, setDataLoading] = useState(true);
+  const [publicLoading, setPublicLoading] = useState(true);
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('calendar');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Modals State
+  // Login Modal State (for Landing Page)
+  const [loginModalOpen, setLoginModalOpen] = useState(false);
+  const [loginPromptNotice, setLoginPromptNotice] = useState<string | null>(null);
+  const pendingActionRef = useRef<{ dateISO?: string; roomId?: string } | null>(null);
+
+  // Booking & Detail Modals State
   const [formOpen, setFormOpen] = useState(false);
   const [formInitialCheckIn, setFormInitialCheckIn] = useState<string | undefined>(undefined);
   const [formInitialRoomIds, setFormInitialRoomIds] = useState<string[] | undefined>(undefined);
@@ -81,7 +91,6 @@ function ResortWorkspace() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [asyncError, setAsyncError] = useState<Error | null>(null);
 
-  // Surface async Firestore errors to React ErrorBoundary cleanly
   if (asyncError) {
     throw asyncError;
   }
@@ -102,11 +111,10 @@ function ResortWorkspace() {
       if (!nextUser || !nextUser.emailVerified) {
         setStaffProfile(null);
         setStaffReady(false);
-        setDataLoading(false);
+        setBookings([]);
         return;
       }
 
-      setDataLoading(true);
       try {
         const profile = await ensureStaffProfile(nextUser, pendingDisplayNameRef.current);
         pendingDisplayNameRef.current = undefined;
@@ -114,6 +122,18 @@ function ResortWorkspace() {
         const displayName = getStaffDisplayName(nextUser, profile);
         await seedInitialResortDataIfEmpty(nextUser, displayName);
         setStaffReady(true);
+        setLoginModalOpen(false);
+        setLoginPromptNotice(null);
+
+        // Execute pending quick-book action if user clicked a room before logging in
+        if (pendingActionRef.current) {
+          const pending = pendingActionRef.current;
+          pendingActionRef.current = null;
+          setEditingBooking(null);
+          setFormInitialCheckIn(pending.dateISO);
+          setFormInitialRoomIds(pending.roomId ? [pending.roomId] : undefined);
+          setFormOpen(true);
+        }
       } catch (err) {
         setAsyncError(err instanceof Error ? err : new Error(String(err)));
       }
@@ -122,10 +142,9 @@ function ResortWorkspace() {
     return () => unsub();
   }, []);
 
-  // Real-time Firestore listeners (only after auth & staffReady)
+  // Public Real-time Firestore listeners (non-PII: resortSettings, rooms, roomLocks)
+  // Always active so Landing Page shows live calendar immediately without login!
   useEffect(() => {
-    if (!user || !user.emailVerified || !staffReady) return;
-
     const settingsRef = doc(db, 'resortSettings', RESORT_ID);
     const unsubSettings = onSnapshot(
       settingsRef,
@@ -152,6 +171,7 @@ function ResortWorkspace() {
           ...(d.data() as Omit<Room, 'id'>),
         }));
         setRooms(list);
+        setPublicLoading(false);
       },
       (error) => {
         try {
@@ -162,6 +182,36 @@ function ResortWorkspace() {
       },
     );
 
+    const locksQuery = query(collection(db, 'roomLocks'), where('resortId', '==', RESORT_ID));
+    const unsubLocks = onSnapshot(
+      locksQuery,
+      (snap) => {
+        const list: RoomLock[] = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<RoomLock, 'id'>),
+        }));
+        setRoomLocks(list);
+      },
+      (error) => {
+        try {
+          handleFirestoreError(error, OperationType.LIST, 'roomLocks');
+        } catch (err) {
+          setAsyncError(err instanceof Error ? err : new Error(String(err)));
+        }
+      },
+    );
+
+    return () => {
+      unsubSettings();
+      unsubRooms();
+      unsubLocks();
+    };
+  }, []);
+
+  // Authenticated Staff-only listener for full Bookings (guest PII)
+  useEffect(() => {
+    if (!user || !user.emailVerified || !staffReady) return;
+
     const bookingsQuery = query(collection(db, 'bookings'), where('resortId', '==', RESORT_ID));
     const unsubBookings = onSnapshot(
       bookingsQuery,
@@ -171,9 +221,7 @@ function ResortWorkspace() {
           ...(d.data() as Omit<Booking, 'id'>),
         }));
         setBookings(list);
-        setDataLoading(false);
 
-        // Keep open detail modal synchronized in real-time
         setSelectedBooking((curr) => {
           if (!curr) return null;
           return list.find((item) => item.id === curr.id) || null;
@@ -189,8 +237,6 @@ function ResortWorkspace() {
     );
 
     return () => {
-      unsubSettings();
-      unsubRooms();
       unsubBookings();
     };
   }, [user, staffReady]);
@@ -201,48 +247,50 @@ function ResortWorkspace() {
     const refreshed = auth.currentUser;
     if (refreshed.emailVerified) {
       setUser({ ...refreshed } as User);
-      setDataLoading(true);
       const profile = await ensureStaffProfile(refreshed, pendingDisplayNameRef.current);
       setStaffProfile(profile);
       const displayName = getStaffDisplayName(refreshed, profile);
       await seedInitialResortDataIfEmpty(refreshed, displayName);
       setStaffReady(true);
+      setLoginModalOpen(false);
     } else {
       throw new Error('ระบบยังไม่พบการยืนยันอีเมล กรุณาคลิกลิงก์ในอีเมลของคุณก่อนแล้วลองใหม่อีกครั้ง');
     }
   };
 
-  if (!authReady) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
-        <div className="text-sm text-slate-500">กำลังตรวจสอบสิทธิ์ผู้ใช้งาน...</div>
-      </div>
-    );
-  }
+  // Fallback rooms preview when database hasn't been seeded by first staff login yet
+  const effectiveRooms = useMemo<Room[]>(() => {
+    if (rooms.length > 0) return rooms;
+    return DEFAULT_ROOMS_SEED.map((r) => ({
+      id: r.id,
+      resortId: RESORT_ID,
+      name: r.name,
+      roomType: r.roomType,
+      capacity: r.capacity,
+      sortOrder: r.sortOrder,
+      isActive: true,
+      updatedByUid: '',
+    }));
+  }, [rooms]);
 
-  if (!user) {
-    return (
-      <LoginScreen
-        onPendingDisplayName={(name) => {
-          pendingDisplayNameRef.current = name;
-        }}
-      />
-    );
-  }
+  const resortDisplayName = settings?.resortName || DEFAULT_RESORT_SEED.resortName;
+  const isAuthenticatedStaff = Boolean(user && user.emailVerified && staffReady);
+  const staffName = user ? getStaffDisplayName(user, staffProfile) : '';
 
-  if (!user.emailVerified) {
-    return (
-      <LoginScreen
-        unverifiedUser={user}
-        onEmailVerifiedRefresh={handleRefreshEmailVerification}
-      />
-    );
-  }
-
-  const staffName = getStaffDisplayName(user, staffProfile);
-  const resortDisplayName = settings?.resortName || 'ระบบจัดการห้องพักรีสอร์ท';
+  const openLoginModal = (reason?: string, pendingBook?: { dateISO?: string; roomId?: string }) => {
+    pendingActionRef.current = pendingBook || null;
+    setLoginPromptNotice(reason || null);
+    setLoginModalOpen(true);
+  };
 
   const openNewBookingModal = (dateISO?: string, roomId?: string) => {
+    if (!isAuthenticatedStaff) {
+      openLoginModal('กรุณาเข้าสู่ระบบทีมงานเพื่อบันทึกรายละเอียดการจองห้องพัก', {
+        dateISO,
+        roomId,
+      });
+      return;
+    }
     setEditingBooking(null);
     setFormInitialCheckIn(dateISO);
     setFormInitialRoomIds(roomId ? [roomId] : undefined);
@@ -258,8 +306,9 @@ function ResortWorkspace() {
   };
 
   const handleSubmitBooking = async (input: BookingFormInput, editing?: Booking | null) => {
+    if (!user) return;
     try {
-      await createOrUpdateBookingAtomic(input, rooms, user, staffName, editing);
+      await createOrUpdateBookingAtomic(input, effectiveRooms, user, staffName, editing);
       setFormOpen(false);
       setEditingBooking(null);
       showToast(
@@ -281,6 +330,7 @@ function ResortWorkspace() {
   };
 
   const handleCancelBooking = async (booking: Booking) => {
+    if (!user) return;
     await cancelBookingAtomic(booking, user, staffName);
     showToast(`ยกเลิกการจองห้อง ${booking.roomNames.join(', ')} แล้ว (ห้องกลับมามีสถานะว่างทันที)`);
   };
@@ -290,9 +340,12 @@ function ResortWorkspace() {
     resortSubtitle: string;
     checkInTime: string;
     checkOutTime: string;
+    breakfastOptions: string[];
+    dinnerOptions: string[];
   }) => {
+    if (!user) return;
     await saveResortSettings(input, user, staffName);
-    showToast('บันทึกข้อมูลรีสอร์ทเรียบร้อยแล้ว');
+    showToast('บันทึกข้อมูลรีสอร์ทและรายการอาหารเรียบร้อยแล้ว');
   };
 
   const handleSaveRoom = async (
@@ -305,6 +358,7 @@ function ResortWorkspace() {
     },
     existingRoomId?: string,
   ) => {
+    if (!user) return;
     await upsertRoom(input, user, existingRoomId);
     showToast(existingRoomId ? 'อัปเดตข้อมูลห้องพักแล้ว' : 'เพิ่มห้องพักใหม่เรียบร้อยแล้ว');
   };
@@ -332,12 +386,97 @@ function ResortWorkspace() {
     },
   ];
 
+  // Unverified email gate when signed in via Email/Password without verification
+  if (authReady && user && !user.emailVerified) {
+    return (
+      <LoginScreen
+        resortName={resortDisplayName}
+        unverifiedUser={user}
+        onEmailVerifiedRefresh={handleRefreshEmailVerification}
+      />
+    );
+  }
+
+  // PUBLIC LANDING PAGE (No Login Required — Header is Resort Name + Login button on top right)
+  if (!isAuthenticatedStaff) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col">
+        {/* Landing Page Header: Resort Name on left, Login button on right */}
+        <header className="sticky top-0 z-20 h-16 bg-white border-b border-slate-200 px-4 sm:px-6">
+          <div className="max-w-[1440px] mx-auto h-full flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-9 h-9 rounded-lg bg-teal-700 text-white flex items-center justify-center shrink-0">
+                <Building2 className="w-5 h-5" />
+              </div>
+              <h1 className="text-base sm:text-xl font-bold text-slate-900 truncate">
+                {resortDisplayName}
+              </h1>
+            </div>
+
+            <div className="flex items-center gap-2.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => openLoginModal()}
+                className="min-h-[40px] inline-flex items-center gap-2 px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white text-xs sm:text-sm font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0"
+              >
+                <LogIn className="w-4 h-4" />
+                เข้าสู่ระบบ (Login)
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="flex-1 p-4 sm:p-6 max-w-[1440px] w-full mx-auto">
+          {publicLoading ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {[1, 2, 3].map((n) => (
+                  <div
+                    key={n}
+                    className="h-24 bg-white border border-slate-200 rounded-xl animate-pulse"
+                  />
+                ))}
+              </div>
+              <div className="h-[480px] bg-white border border-slate-200 rounded-xl animate-pulse" />
+            </div>
+          ) : (
+            <MonthlyCalendar
+              isAuthenticated={false}
+              rooms={effectiveRooms}
+              roomLocks={roomLocks}
+              bookings={[]}
+              onQuickBook={(dateISO, roomId) => openNewBookingModal(dateISO, roomId)}
+              onSelectBooking={() => {}}
+              onRequireLogin={(reason) => openLoginModal(reason)}
+            />
+          )}
+        </main>
+
+        {loginModalOpen && (
+          <LoginScreen
+            resortName={resortDisplayName}
+            promptNotice={loginPromptNotice}
+            onClose={() => {
+              setLoginModalOpen(false);
+              setLoginPromptNotice(null);
+              pendingActionRef.current = null;
+            }}
+            onPendingDisplayName={(name) => {
+              pendingDisplayNameRef.current = name;
+            }}
+          />
+        )}
+      </div>
+    );
+  }
+
+  // AUTHENTICATED STAFF WORKSPACE
   const pageTitle =
     activeTab === 'calendar'
       ? 'ปฏิทินแสดงสถานะห้องพักรายเดือน'
       : activeTab === 'bookings'
         ? 'รายการจองทั้งหมด'
-        : 'ตั้งค่าข้อมูลรีสอร์ทและห้องพัก';
+        : 'ตั้งค่าข้อมูลรีสอร์ท ห้องพัก และเมนูอาหาร';
 
   return (
     <div className="min-h-screen bg-slate-50 flex">
@@ -371,12 +510,11 @@ function ResortWorkspace() {
           })}
         </nav>
 
-        {/* Staff Account Footer */}
         <div className="p-4 border-t border-slate-200 space-y-3">
           <div className="min-w-0">
             <div className="text-xs text-slate-500">พนักงานที่เข้าสู่ระบบ</div>
             <div className="text-sm font-semibold text-slate-900 truncate mt-0.5">{staffName}</div>
-            <div className="text-xs text-slate-500 truncate">{user.email}</div>
+            <div className="text-xs text-slate-500 truncate">{user?.email}</div>
           </div>
           <button
             type="button"
@@ -444,7 +582,7 @@ function ResortWorkspace() {
               <div>
                 <div className="text-xs text-slate-500">พนักงานที่เข้าสู่ระบบ</div>
                 <div className="text-sm font-semibold text-slate-900 truncate">{staffName}</div>
-                <div className="text-xs text-slate-500 truncate">{user.email}</div>
+                <div className="text-xs text-slate-500 truncate">{user?.email}</div>
               </div>
               <button
                 type="button"
@@ -461,7 +599,6 @@ function ResortWorkspace() {
 
       {/* Main Content Viewport */}
       <div className="flex-1 lg:pl-64 flex flex-col min-w-0">
-        {/* Top Header Bar (3 zones, compact height) */}
         <header className="sticky top-0 z-20 h-16 bg-white border-b border-slate-200 px-4 sm:px-6 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
             <button
@@ -489,7 +626,6 @@ function ResortWorkspace() {
           </div>
         </header>
 
-        {/* Main View */}
         <main className="flex-1 p-4 sm:p-6 max-w-[1440px] w-full mx-auto">
           {toastMessage && (
             <div className="mb-4 p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-sm font-medium flex items-center justify-between gap-3">
@@ -508,56 +644,43 @@ function ResortWorkspace() {
             </div>
           )}
 
-          {dataLoading ? (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                {[1, 2, 3, 4].map((n) => (
-                  <div
-                    key={n}
-                    className="h-24 bg-white border border-slate-200 rounded-xl animate-pulse"
-                  />
-                ))}
-              </div>
-              <div className="h-[460px] bg-white border border-slate-200 rounded-xl animate-pulse" />
-            </div>
-          ) : (
-            <>
-              {activeTab === 'calendar' && (
-                <MonthlyCalendar
-                  rooms={rooms}
-                  bookings={bookings}
-                  onQuickBook={(dateISO, roomId) => openNewBookingModal(dateISO, roomId)}
-                  onSelectBooking={(booking) => setSelectedBooking(booking)}
-                />
-              )}
+          {activeTab === 'calendar' && (
+            <MonthlyCalendar
+              isAuthenticated={true}
+              rooms={effectiveRooms}
+              roomLocks={roomLocks}
+              bookings={bookings}
+              onQuickBook={(dateISO, roomId) => openNewBookingModal(dateISO, roomId)}
+              onSelectBooking={(booking) => setSelectedBooking(booking)}
+              onRequireLogin={(reason) => openLoginModal(reason)}
+            />
+          )}
 
-              {activeTab === 'bookings' && (
-                <BookingsListView
-                  bookings={bookings}
-                  onSelectBooking={(booking) => setSelectedBooking(booking)}
-                  onAddBooking={() => openNewBookingModal()}
-                />
-              )}
+          {activeTab === 'bookings' && (
+            <BookingsListView
+              bookings={bookings}
+              onSelectBooking={(booking) => setSelectedBooking(booking)}
+              onAddBooking={() => openNewBookingModal()}
+            />
+          )}
 
-              {activeTab === 'setup' && (
-                <ResortSetupView
-                  settings={settings}
-                  rooms={rooms}
-                  bookings={bookings}
-                  onSaveSettings={handleSaveSettings}
-                  onSaveRoom={handleSaveRoom}
-                  onDeleteRoom={handleDeleteRoom}
-                />
-              )}
-            </>
+          {activeTab === 'setup' && (
+            <ResortSetupView
+              settings={settings}
+              rooms={effectiveRooms}
+              bookings={bookings}
+              onSaveSettings={handleSaveSettings}
+              onSaveRoom={handleSaveRoom}
+              onDeleteRoom={handleDeleteRoom}
+            />
           )}
         </main>
       </div>
 
-      {/* Add / Edit Booking Form Modal */}
       <BookingFormModal
         isOpen={formOpen}
-        rooms={rooms}
+        settings={settings}
+        rooms={effectiveRooms}
         bookings={bookings}
         initialCheckIn={formInitialCheckIn}
         initialRoomIds={formInitialRoomIds}
@@ -569,7 +692,6 @@ function ResortWorkspace() {
         onSubmit={handleSubmitBooking}
       />
 
-      {/* Booking Detail Modal */}
       <BookingDetailModal
         booking={selectedBooking}
         onClose={() => setSelectedBooking(null)}
@@ -577,7 +699,6 @@ function ResortWorkspace() {
         onCancelBooking={handleCancelBooking}
       />
 
-      {/* Red Double Booking Alert Modal */}
       <DoubleBookingAlertModal
         isOpen={doubleBookingAlert.isOpen}
         conflictingRooms={doubleBookingAlert.rooms}

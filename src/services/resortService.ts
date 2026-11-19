@@ -2,6 +2,7 @@ import type { User } from 'firebase/auth';
 import {
   collection,
   deleteDoc,
+  deleteField,
   doc,
   getDoc,
   getDocFromServer,
@@ -17,6 +18,8 @@ import {
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
   BLUEPRINT_CONSTRAINTS,
+  DEFAULT_BREAKFAST_OPTIONS,
+  DEFAULT_DINNER_OPTIONS,
   DEFAULT_RESORT_SEED,
   DEFAULT_ROOMS_SEED,
   RESORT_ID,
@@ -48,6 +51,20 @@ export class ValidationError extends Error {
 
 function clampString(value: string, maxLength: number): string {
   return value.trim().slice(0, maxLength);
+}
+
+function sanitizeStringList(items: string[], maxCount: number, maxLen: number): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of items) {
+    const clean = clampString(raw, maxLen);
+    if (clean && !seen.has(clean)) {
+      seen.add(clean);
+      result.push(clean);
+      if (result.length >= maxCount) break;
+    }
+  }
+  return result;
 }
 
 function generateSafeId(prefix: string): string {
@@ -128,10 +145,27 @@ export async function seedInitialResortDataIfEmpty(user: User, staffName: string
         ),
         checkInTime: DEFAULT_RESORT_SEED.checkInTime,
         checkOutTime: DEFAULT_RESORT_SEED.checkOutTime,
+        breakfastOptions: DEFAULT_BREAKFAST_OPTIONS,
+        dinnerOptions: DEFAULT_DINNER_OPTIONS,
         updatedAt: serverTimestamp(),
         updatedByUid: user.uid,
         updatedByName: clampString(staffName, BLUEPRINT_CONSTRAINTS.STAFF_NAME_MAX),
       });
+    } else {
+      const data = settingsSnap.data();
+      if (!Array.isArray(data.breakfastOptions) || !Array.isArray(data.dinnerOptions)) {
+        await updateDoc(settingsRef, {
+          breakfastOptions: Array.isArray(data.breakfastOptions)
+            ? data.breakfastOptions
+            : DEFAULT_BREAKFAST_OPTIONS,
+          dinnerOptions: Array.isArray(data.dinnerOptions)
+            ? data.dinnerOptions
+            : DEFAULT_DINNER_OPTIONS,
+          updatedAt: serverTimestamp(),
+          updatedByUid: user.uid,
+          updatedByName: clampString(staffName, BLUEPRINT_CONSTRAINTS.STAFF_NAME_MAX),
+        });
+      }
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, 'resortSettings/main');
@@ -164,7 +198,10 @@ export async function seedInitialResortDataIfEmpty(user: User, staffName: string
 }
 
 export async function saveResortSettings(
-  input: Pick<ResortSettings, 'resortName' | 'resortSubtitle' | 'checkInTime' | 'checkOutTime'>,
+  input: Pick<
+    ResortSettings,
+    'resortName' | 'resortSubtitle' | 'checkInTime' | 'checkOutTime' | 'breakfastOptions' | 'dinnerOptions'
+  >,
   user: User,
   staffName: string,
 ): Promise<void> {
@@ -172,6 +209,18 @@ export async function saveResortSettings(
   if (!resortName) {
     throw new ValidationError('กรุณาระบุชื่อรีสอร์ท');
   }
+
+  const breakfastOptions = sanitizeStringList(
+    input.breakfastOptions || DEFAULT_BREAKFAST_OPTIONS,
+    BLUEPRINT_CONSTRAINTS.MEAL_OPTIONS_MAX_COUNT,
+    BLUEPRINT_CONSTRAINTS.MEAL_OPTION_MAX_LEN,
+  );
+  const dinnerOptions = sanitizeStringList(
+    input.dinnerOptions || DEFAULT_DINNER_OPTIONS,
+    BLUEPRINT_CONSTRAINTS.MEAL_OPTIONS_MAX_COUNT,
+    BLUEPRINT_CONSTRAINTS.MEAL_OPTION_MAX_LEN,
+  );
+
   const settingsRef = doc(db, 'resortSettings', RESORT_ID);
   try {
     await updateDoc(settingsRef, {
@@ -179,6 +228,8 @@ export async function saveResortSettings(
       resortSubtitle: clampString(input.resortSubtitle, BLUEPRINT_CONSTRAINTS.RESORT_SUBTITLE_MAX),
       checkInTime: clampString(input.checkInTime || '14:00', BLUEPRINT_CONSTRAINTS.TIME_MAX),
       checkOutTime: clampString(input.checkOutTime || '12:00', BLUEPRINT_CONSTRAINTS.TIME_MAX),
+      breakfastOptions,
+      dinnerOptions,
       updatedAt: serverTimestamp(),
       updatedByUid: user.uid,
       updatedByName: clampString(staffName, BLUEPRINT_CONSTRAINTS.STAFF_NAME_MAX),
@@ -259,7 +310,6 @@ export async function createOrUpdateBookingAtomic(
   staffName: string,
   editingBooking?: Booking | null,
 ): Promise<string> {
-  // 1. Structural & Blueprint Validation
   if (
     !BLUEPRINT_CONSTRAINTS.DATE_PATTERN.test(input.checkIn) ||
     !BLUEPRINT_CONSTRAINTS.DATE_PATTERN.test(input.checkOut)
@@ -289,10 +339,29 @@ export async function createOrUpdateBookingAtomic(
   if (!guestName) throw new ValidationError('กรุณากรอกชื่อลูกค้า');
   if (!guestPhone) throw new ValidationError('กรุณากรอกเบอร์โทรศัพท์ลูกค้า');
 
+  const extraBed = Boolean(input.extraBed);
+  const extraBedCount = extraBed ? (input.extraBedCount === 2 ? 2 : 1) : 0;
+
+  const mealBreakfastItems = sanitizeStringList(
+    input.mealBreakfastItems,
+    BLUEPRINT_CONSTRAINTS.MEAL_OPTIONS_MAX_COUNT,
+    BLUEPRINT_CONSTRAINTS.MEAL_OPTION_MAX_LEN,
+  );
+  const mealDinnerItems = sanitizeStringList(
+    input.mealDinnerItems,
+    BLUEPRINT_CONSTRAINTS.MEAL_OPTIONS_MAX_COUNT,
+    BLUEPRINT_CONSTRAINTS.MEAL_OPTION_MAX_LEN,
+  );
+
+  const hasAnyMeals = mealBreakfastItems.length > 0 || mealDinnerItems.length > 0;
+  const mealSetsCount = hasAnyMeals
+    ? Math.max(0, Math.min(BLUEPRINT_CONSTRAINTS.MEAL_SETS_MAX, Math.round(Number(input.mealSetsCount) || 0)))
+    : 0;
+
   const roomMap = new Map(rooms.map((r) => [r.id, r]));
   const roomNames = uniqueRoomIds.map((id) => roomMap.get(id)?.name || id);
 
-  // 2. Authoritative Fresh Server Check against existing confirmed bookings
+  // Authoritative Fresh Server Check against existing confirmed bookings
   try {
     const confirmedQuery = query(
       collection(db, 'bookings'),
@@ -322,7 +391,7 @@ export async function createOrUpdateBookingAtomic(
     handleFirestoreError(error, OperationType.LIST, 'bookings');
   }
 
-  // 3. Atomic Firestore Transaction with per-room per-night locks
+  // Atomic Firestore Transaction with per-room per-night locks
   const targetBookingId = editingBooking ? editingBooking.id : generateSafeId('bk');
   const bookingRef = doc(db, 'bookings', targetBookingId);
 
@@ -346,16 +415,10 @@ export async function createOrUpdateBookingAtomic(
   const newLockIdSet = new Set(newLockDescriptors.map((l) => l.lockId));
   const locksToDelete = oldLockIds.filter((id) => !newLockIdSet.has(id));
 
-  const mealSetsCount =
-    input.category === 'room_with_meal'
-      ? Math.max(0, Math.min(BLUEPRINT_CONSTRAINTS.MEAL_SETS_MAX, Math.round(Number(input.mealSetsCount) || 0)))
-      : 0;
-
   const cleanStaffName = clampString(staffName, BLUEPRINT_CONSTRAINTS.STAFF_NAME_MAX) || 'พนักงานรีสอร์ท';
 
   try {
     await runTransaction(db, async (transaction) => {
-      // Phase A: Read all target lock docs first
       const conflictRoomsInTx = new Set<string>();
       const locksToCreate: typeof newLockDescriptors = [];
 
@@ -376,27 +439,18 @@ export async function createOrUpdateBookingAtomic(
         throw new DoubleBookingError(Array.from(conflictRoomsInTx));
       }
 
-      // Phase B: Write booking & update atomic room locks
       const bookingPayload = {
         resortId: RESORT_ID,
         checkIn: input.checkIn,
         checkOut: input.checkOut,
         roomIds: uniqueRoomIds,
         roomNames,
-        category: input.category,
-        mealBreakfast:
-          input.category === 'room_with_meal'
-            ? clampString(input.mealBreakfast, BLUEPRINT_CONSTRAINTS.MEAL_BREAKFAST_MAX)
-            : '',
-        mealDinner:
-          input.category === 'room_with_meal'
-            ? clampString(input.mealDinner, BLUEPRINT_CONSTRAINTS.MEAL_DINNER_MAX)
-            : '',
+        mealBreakfastItems,
+        mealDinnerItems,
         mealSetsCount,
-        mealNotes:
-          input.category === 'room_with_meal'
-            ? clampString(input.mealNotes, BLUEPRINT_CONSTRAINTS.MEAL_NOTES_MAX)
-            : '',
+        mealNotes: clampString(input.mealNotes, BLUEPRINT_CONSTRAINTS.MEAL_NOTES_MAX),
+        extraBed,
+        extraBedCount,
         guestName,
         guestPhone,
         bookingChannel: clampString(
@@ -416,7 +470,13 @@ export async function createOrUpdateBookingAtomic(
       };
 
       if (editingBooking) {
-        transaction.update(bookingRef, bookingPayload);
+        transaction.update(bookingRef, {
+          ...bookingPayload,
+          // Clean up any legacy fields if editing a record created prior to schema update
+          category: deleteField(),
+          mealBreakfast: deleteField(),
+          mealDinner: deleteField(),
+        });
       } else {
         transaction.set(bookingRef, {
           ...bookingPayload,
@@ -468,7 +528,6 @@ export async function cancelBookingAtomic(
 
   try {
     await runTransaction(db, async (transaction) => {
-      // Read existing locks first before writes
       const existingLockRefs: Array<ReturnType<typeof doc>> = [];
       for (const lockId of lockIds) {
         const ref = doc(db, 'roomLocks', lockId);

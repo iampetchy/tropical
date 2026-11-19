@@ -1,16 +1,13 @@
 import React, { useMemo, useState } from 'react';
 import {
-  BedDouble,
   CalendarDays,
   Plus,
   Search,
-  Utensils,
 } from 'lucide-react';
 import {
-  CATEGORY_LABELS,
+  getNormalizedBookingMeals,
   PAYMENT_STATUS_LABELS,
   type Booking,
-  type BookingCategory,
   type PaymentStatus,
 } from '../types/resort';
 import { formatThaiDate, getNightsCount } from '../utils/dateUtils';
@@ -28,7 +25,6 @@ export const BookingsListView: React.FC<BookingsListViewProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'confirmed' | 'cancelled' | 'all'>('confirmed');
-  const [categoryFilter, setCategoryFilter] = useState<'all' | BookingCategory>('all');
   const [paymentFilter, setPaymentFilter] = useState<'all' | PaymentStatus>('all');
 
   const filteredBookings = useMemo(() => {
@@ -36,7 +32,6 @@ export const BookingsListView: React.FC<BookingsListViewProps> = ({
     return bookings
       .filter((b) => {
         if (statusFilter !== 'all' && b.status !== statusFilter) return false;
-        if (categoryFilter !== 'all' && b.category !== categoryFilter) return false;
         if (paymentFilter !== 'all' && b.paymentStatus !== paymentFilter) return false;
         if (!q) return true;
         return (
@@ -47,7 +42,7 @@ export const BookingsListView: React.FC<BookingsListViewProps> = ({
         );
       })
       .sort((a, b) => a.checkIn.localeCompare(b.checkIn));
-  }, [bookings, searchQuery, statusFilter, categoryFilter, paymentFilter]);
+  }, [bookings, searchQuery, statusFilter, paymentFilter]);
 
   return (
     <div className="space-y-4">
@@ -74,17 +69,6 @@ export const BookingsListView: React.FC<BookingsListViewProps> = ({
             <option value="confirmed">รายการจองที่ยืนยัน</option>
             <option value="cancelled">รายการที่ยกเลิกแล้ว</option>
             <option value="all">ทุกสถานะ</option>
-          </select>
-
-          <select
-            aria-label="กรอง Category"
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value as 'all' | BookingCategory)}
-            className="min-h-[40px] px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600"
-          >
-            <option value="all">ทุก Category</option>
-            <option value="room_only">ห้องอย่างเดียว</option>
-            <option value="room_with_meal">ห้อง+อาหาร</option>
           </select>
 
           <select
@@ -128,7 +112,7 @@ export const BookingsListView: React.FC<BookingsListViewProps> = ({
                 <tr className="border-b border-slate-200 bg-slate-50 text-xs font-semibold text-slate-600">
                   <th className="py-3 px-4 whitespace-nowrap">วันเข้าพัก – ออก</th>
                   <th className="py-3 px-4 whitespace-nowrap">ห้องพัก</th>
-                  <th className="py-3 px-4 whitespace-nowrap">Category</th>
+                  <th className="py-3 px-4 whitespace-nowrap">อาหาร / เตียงเสริม</th>
                   <th className="py-3 px-4 whitespace-nowrap">ผู้เข้าพัก</th>
                   <th className="py-3 px-4 whitespace-nowrap">ช่องทาง</th>
                   <th className="py-3 px-4 whitespace-nowrap">ชำระเงิน</th>
@@ -138,8 +122,9 @@ export const BookingsListView: React.FC<BookingsListViewProps> = ({
               <tbody className="divide-y divide-slate-100 text-sm">
                 {filteredBookings.map((b) => {
                   const nights = getNightsCount(b.checkIn, b.checkOut);
-                  const isMeal = b.category === 'room_with_meal';
                   const isCancelled = b.status === 'cancelled';
+                  const { breakfastItems, dinnerItems } = getNormalizedBookingMeals(b);
+                  const allMeals = [...breakfastItems, ...dinnerItems];
 
                   return (
                     <tr
@@ -163,19 +148,15 @@ export const BookingsListView: React.FC<BookingsListViewProps> = ({
                           <div className="text-xs text-rose-600 font-medium">ยกเลิกแล้ว</div>
                         )}
                       </td>
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        <span
-                          className={`inline-flex items-center gap-1.5 text-xs font-medium ${
-                            isMeal ? 'text-orange-700' : 'text-rose-700'
-                          }`}
-                        >
-                          {isMeal ? (
-                            <Utensils className="w-3.5 h-3.5 shrink-0" />
-                          ) : (
-                            <BedDouble className="w-3.5 h-3.5 shrink-0" />
-                          )}
-                          {CATEGORY_LABELS[b.category]}
-                        </span>
+                      <td className="py-3 px-4 text-xs text-slate-700">
+                        <div className="truncate max-w-[220px]">
+                          {allMeals.length > 0 ? allMeals.join(', ') : 'ไม่ระบุอาหาร'}
+                        </div>
+                        <div className="text-slate-500 mt-0.5 tabular-nums">
+                          {b.extraBed
+                            ? `เตียงเสริม ${b.extraBedCount || 1} เตียง`
+                            : 'ไม่รับเตียงเสริม'}
+                        </div>
                       </td>
                       <td className="py-3 px-4">
                         <div className="font-medium text-slate-900">{b.guestName}</div>

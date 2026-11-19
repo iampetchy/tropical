@@ -5,14 +5,16 @@ import {
   ChevronLeft,
   ChevronRight,
   Filter,
+  Lock,
   Plus,
   Utensils,
 } from 'lucide-react';
 import {
-  CATEGORY_LABELS,
+  getNormalizedBookingMeals,
   type Booking,
   type CalendarFilters,
   type Room,
+  type RoomLock,
 } from '../types/resort';
 import {
   formatThaiDateLong,
@@ -24,22 +26,29 @@ import {
 } from '../utils/dateUtils';
 
 interface MonthlyCalendarProps {
+  isAuthenticated: boolean;
   rooms: Room[];
+  roomLocks: RoomLock[];
   bookings: Booking[];
   onQuickBook: (dateISO: string, preselectedRoomId?: string) => void;
   onSelectBooking: (booking: Booking) => void;
+  onRequireLogin: (reason: string) => void;
 }
 
 interface RoomDayStatus {
   room: Room;
+  isBooked: boolean;
   booking: Booking | null;
 }
 
 export const MonthlyCalendar: React.FC<MonthlyCalendarProps> = ({
+  isAuthenticated,
   rooms,
+  roomLocks,
   bookings,
   onQuickBook,
   onSelectBooking,
+  onRequireLogin,
 }) => {
   const now = new Date();
   const [viewYear, setViewYear] = useState(now.getFullYear());
@@ -49,7 +58,6 @@ export const MonthlyCalendar: React.FC<MonthlyCalendarProps> = ({
   const [filters, setFilters] = useState<CalendarFilters>({
     roomId: 'all',
     onlyAvailableDays: false,
-    category: 'all',
   });
 
   const activeRooms = useMemo(
@@ -70,12 +78,20 @@ export const MonthlyCalendar: React.FC<MonthlyCalendarProps> = ({
     [bookings],
   );
 
+  // Fast lookup set of locked "roomId_YYYY-MM-DD" for public Landing Page availability
+  const lockKeySet = useMemo(() => {
+    const set = new Set<string>();
+    for (const lock of roomLocks) {
+      set.add(`${lock.roomId}_${lock.date}`);
+    }
+    return set;
+  }, [roomLocks]);
+
   const cells = useMemo(
     () => getMonthCalendarCells(viewYear, viewMonth),
     [viewYear, viewMonth],
   );
 
-  // Pre-compute room statuses for every visible calendar date
   const dayDataMap = useMemo(() => {
     const map = new Map<
       string,
@@ -83,81 +99,79 @@ export const MonthlyCalendar: React.FC<MonthlyCalendarProps> = ({
         statuses: RoomDayStatus[];
         availableCount: number;
         bookedCount: number;
-        roomWithMealCount: number;
       }
     >();
 
     for (const cell of cells) {
-      const bookingsOnDay = confirmedBookings.filter((b) =>
-        isDateOccupiedByBooking(cell.iso, b.checkIn, b.checkOut),
-      );
-
       const roomBookingLookup = new Map<string, Booking>();
-      for (const b of bookingsOnDay) {
-        for (const rId of b.roomIds) {
-          roomBookingLookup.set(rId, b);
+      if (isAuthenticated) {
+        const bookingsOnDay = confirmedBookings.filter((b) =>
+          isDateOccupiedByBooking(cell.iso, b.checkIn, b.checkOut),
+        );
+        for (const b of bookingsOnDay) {
+          for (const rId of b.roomIds) {
+            roomBookingLookup.set(rId, b);
+          }
         }
       }
 
-      const statuses: RoomDayStatus[] = visibleRooms.map((room) => ({
-        room,
-        booking: roomBookingLookup.get(room.id) || null,
-      }));
+      const statuses: RoomDayStatus[] = visibleRooms.map((room) => {
+        const booking = roomBookingLookup.get(room.id) || null;
+        const isLocked = lockKeySet.has(`${room.id}_${cell.iso}`);
+        return {
+          room,
+          isBooked: Boolean(booking) || isLocked,
+          booking,
+        };
+      });
 
-      const availableCount = statuses.filter((s) => s.booking === null).length;
+      const availableCount = statuses.filter((s) => !s.isBooked).length;
       const bookedCount = statuses.length - availableCount;
-      const roomWithMealCount = statuses.filter(
-        (s) => s.booking?.category === 'room_with_meal',
-      ).length;
 
       map.set(cell.iso, {
         statuses,
         availableCount,
         bookedCount,
-        roomWithMealCount,
       });
     }
 
     return map;
-  }, [cells, confirmedBookings, visibleRooms]);
+  }, [cells, confirmedBookings, visibleRooms, lockKeySet, isAuthenticated]);
 
   const todayISO = toISODate(now);
   const todayStats = useMemo(() => {
-    const bookingsToday = confirmedBookings.filter((b) =>
-      isDateOccupiedByBooking(todayISO, b.checkIn, b.checkOut),
-    );
-    const bookedRoomIds = new Set<string>();
-    let mealBookingsToday = 0;
-    for (const b of bookingsToday) {
-      if (b.category === 'room_with_meal') mealBookingsToday += 1;
-      for (const rId of b.roomIds) bookedRoomIds.add(rId);
+    const bookedIds = new Set<string>();
+    for (const lock of roomLocks) {
+      if (lock.date === todayISO) bookedIds.add(lock.roomId);
     }
-    const bookedCount = activeRooms.filter((r) => bookedRoomIds.has(r.id)).length;
+    if (isAuthenticated) {
+      for (const b of confirmedBookings) {
+        if (isDateOccupiedByBooking(todayISO, b.checkIn, b.checkOut)) {
+          for (const rId of b.roomIds) bookedIds.add(rId);
+        }
+      }
+    }
+    const bookedCount = activeRooms.filter((r) => bookedIds.has(r.id)).length;
     const availableCount = Math.max(0, activeRooms.length - bookedCount);
     return {
       total: activeRooms.length,
       available: availableCount,
       booked: bookedCount,
-      mealBookingsToday,
     };
-  }, [activeRooms, confirmedBookings, todayISO]);
+  }, [activeRooms, confirmedBookings, roomLocks, todayISO, isAuthenticated]);
 
-  // Month summary: how many days in current month have available rooms
   const monthAvailabilitySummary = useMemo(() => {
     const currentMonthCells = cells.filter((c) => c.inCurrentMonth);
     let daysWithAvailability = 0;
-    let totalRoomNightsAvailable = 0;
     for (const c of currentMonthCells) {
       const info = dayDataMap.get(c.iso);
       if (info && info.availableCount > 0) {
         daysWithAvailability += 1;
-        totalRoomNightsAvailable += info.availableCount;
       }
     }
     return {
       totalDays: currentMonthCells.length,
       daysWithAvailability,
-      totalRoomNightsAvailable,
     };
   }, [cells, dayDataMap]);
 
@@ -192,18 +206,37 @@ export const MonthlyCalendar: React.FC<MonthlyCalendarProps> = ({
   }, []);
 
   const mobileDayInfo = dayDataMap.get(selectedMobileDay) || {
-    statuses: visibleRooms.map((room) => ({ room, booking: null })),
+    statuses: visibleRooms.map((room) => ({ room, isBooked: false, booking: null })),
     availableCount: visibleRooms.length,
     bookedCount: 0,
-    roomWithMealCount: 0,
+  };
+
+  const handleAvailableRoomClick = (dateISO: string, roomId?: string) => {
+    if (!isAuthenticated) {
+      onRequireLogin('กรุณาเข้าสู่ระบบทีมงานก่อนบันทึกการจองห้องพักใหม่');
+      return;
+    }
+    onQuickBook(dateISO, roomId);
+  };
+
+  const handleBookedRoomClick = (booking: Booking | null) => {
+    if (!isAuthenticated) {
+      onRequireLogin('กรุณาเข้าสู่ระบบทีมงานเพื่อดูรายละเอียดผู้เข้าพักและแก้ไขการจอง');
+      return;
+    }
+    if (booking) {
+      onSelectBooking(booking);
+    }
   };
 
   return (
     <div className="space-y-4">
-      {/* Today & Month Availability Snapshot Strip */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      {/* Snapshot Strip */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="bg-white border border-slate-200 rounded-xl p-4">
-          <div className="text-xs text-slate-500 mb-1">ห้องว่างวันนี้ ({formatThaiDateLong(todayISO)})</div>
+          <div className="text-xs text-slate-500 mb-1">
+            ห้องว่างวันนี้ ({formatThaiDateLong(todayISO)})
+          </div>
           <div className="text-2xl font-bold text-emerald-700 tabular-nums">
             {todayStats.available}
             <span className="text-sm font-normal text-slate-500"> / {todayStats.total} ห้อง</span>
@@ -219,16 +252,8 @@ export const MonthlyCalendar: React.FC<MonthlyCalendarProps> = ({
         </div>
 
         <div className="bg-white border border-slate-200 rounded-xl p-4">
-          <div className="text-xs text-slate-500 mb-1">บุ๊กกิ้งรวมอาหารวันนี้</div>
-          <div className="text-2xl font-bold text-orange-700 tabular-nums">
-            {todayStats.mealBookingsToday}
-            <span className="text-sm font-normal text-slate-500"> รายการ</span>
-          </div>
-        </div>
-
-        <div className="bg-white border border-slate-200 rounded-xl p-4">
           <div className="text-xs text-slate-500 mb-1">
-            วันที่ขายได้ในเดือน{THAI_MONTHS[viewMonth]}
+            วันที่ยังมีห้องว่างในเดือน{THAI_MONTHS[viewMonth]}
           </div>
           <div className="text-2xl font-bold text-slate-900 tabular-nums">
             {monthAvailabilitySummary.daysWithAvailability}
@@ -319,22 +344,6 @@ export const MonthlyCalendar: React.FC<MonthlyCalendarProps> = ({
               ))}
             </select>
 
-            <select
-              aria-label="กรองตาม Category การจอง"
-              value={filters.category}
-              onChange={(e) =>
-                setFilters((f) => ({
-                  ...f,
-                  category: e.target.value as CalendarFilters['category'],
-                }))
-              }
-              className="min-h-[38px] px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600"
-            >
-              <option value="all">ทุกสถานะและ Category</option>
-              <option value="room_only">เฉพาะจอง: ห้องอย่างเดียว</option>
-              <option value="room_with_meal">เฉพาะจอง: ห้อง+อาหาร</option>
-            </select>
-
             <button
               type="button"
               onClick={() =>
@@ -352,25 +361,29 @@ export const MonthlyCalendar: React.FC<MonthlyCalendarProps> = ({
         </div>
 
         {/* Status Legend */}
-        <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-600">
-          <div className="flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded-sm bg-emerald-100 border border-emerald-400 inline-block" />
-            <span>ห้องว่าง (คลิกเพื่อจองได้ทันที)</span>
+        <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-sm bg-emerald-100 border border-emerald-400 inline-block" />
+              <span>ห้องว่าง (พร้อมจอง)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-sm bg-rose-100 border border-rose-400 inline-block" />
+              <span>ห้องถูกจองแล้ว</span>
+            </div>
           </div>
-          <div className="flex items-center gap-1.5">
-            <BedDouble className="w-3.5 h-3.5 text-rose-600" />
-            <span>จองแล้ว: ห้องอย่างเดียว</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <Utensils className="w-3.5 h-3.5 text-orange-600" />
-            <span>จองแล้ว: ห้อง+อาหาร</span>
-          </div>
+
+          {!isAuthenticated && (
+            <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+              <Lock className="w-3.5 h-3.5 text-slate-400" />
+              เข้าสู่ระบบพนักงานเพื่อบันทึกรายละเอียดหรือแก้ไขการจอง
+            </span>
+          )}
         </div>
       </div>
 
       {/* DESKTOP VIEW: Full Monthly Grid */}
       <div className="hidden md:block bg-white border border-slate-200 rounded-xl overflow-hidden">
-        {/* Weekday Header */}
         <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50">
           {THAI_WEEKDAYS_SHORT.map((dayLabel, idx) => (
             <div
@@ -384,17 +397,11 @@ export const MonthlyCalendar: React.FC<MonthlyCalendarProps> = ({
           ))}
         </div>
 
-        {/* Calendar Grid Cells */}
         <div className="grid grid-cols-7">
           {cells.map((cell) => {
             const info = dayDataMap.get(cell.iso)!;
             const dimmedByAvailabilityFilter =
               filters.onlyAvailableDays && info.availableCount === 0;
-
-            const filteredStatuses = info.statuses.filter((s) => {
-              if (filters.category === 'all') return true;
-              return s.booking?.category === filters.category;
-            });
 
             return (
               <div
@@ -431,7 +438,7 @@ export const MonthlyCalendar: React.FC<MonthlyCalendarProps> = ({
                   {info.availableCount > 0 && (
                     <button
                       type="button"
-                      onClick={() => onQuickBook(cell.iso)}
+                      onClick={() => handleAvailableRoomClick(cell.iso)}
                       title={`บันทึกการจองวันที่ ${cell.iso}`}
                       className="p-1 rounded hover:bg-teal-50 text-slate-400 hover:text-teal-700 transition-colors"
                     >
@@ -442,13 +449,13 @@ export const MonthlyCalendar: React.FC<MonthlyCalendarProps> = ({
 
                 {/* Room Status List */}
                 <div className="space-y-1 flex-1">
-                  {filteredStatuses.map(({ room, booking }) => {
-                    if (!booking) {
+                  {info.statuses.map(({ room, isBooked, booking }) => {
+                    if (!isBooked) {
                       return (
                         <button
                           key={room.id}
                           type="button"
-                          onClick={() => onQuickBook(cell.iso, room.id)}
+                          onClick={() => handleAvailableRoomClick(cell.iso, room.id)}
                           className="w-full px-1.5 py-1 rounded border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[11px] font-medium flex items-center justify-between gap-1 text-left transition-colors"
                         >
                           <span className="truncate">{room.name}</span>
@@ -457,35 +464,38 @@ export const MonthlyCalendar: React.FC<MonthlyCalendarProps> = ({
                       );
                     }
 
-                    const isMeal = booking.category === 'room_with_meal';
+                    const meals = booking ? getNormalizedBookingMeals(booking) : null;
+                    const hasMeals = meals
+                      ? meals.breakfastItems.length > 0 || meals.dinnerItems.length > 0
+                      : false;
+                    const hasExtraBed = Boolean(booking?.extraBed);
+
                     return (
                       <button
-                        key={`${room.id}-${booking.id}`}
+                        key={`${room.id}-${booking?.id || cell.iso}`}
                         type="button"
-                        onClick={() => onSelectBooking(booking)}
-                        title={`${room.name} · ${CATEGORY_LABELS[booking.category]} · ${booking.guestName}`}
-                        className={`w-full px-1.5 py-1 rounded border text-[11px] text-left transition-colors ${
-                          isMeal
-                            ? 'border-orange-200 bg-orange-50 hover:bg-orange-100 text-orange-900'
-                            : 'border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-900'
-                        }`}
+                        onClick={() => handleBookedRoomClick(booking)}
+                        title={
+                          booking
+                            ? `${room.name} · ${booking.guestName}`
+                            : `${room.name} · ถูกจองแล้ว`
+                        }
+                        className="w-full px-1.5 py-1 rounded border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-900 text-[11px] text-left transition-colors"
                       >
                         <div className="flex items-center justify-between gap-1 font-semibold">
-                          <span className="truncate flex items-center gap-1">
-                            {isMeal ? (
-                              <Utensils className="w-3 h-3 text-orange-600 shrink-0" />
-                            ) : (
-                              <BedDouble className="w-3 h-3 text-rose-600 shrink-0" />
-                            )}
-                            <span className="truncate">{room.name}</span>
-                          </span>
-                          <span className="text-[10px] font-medium shrink-0">
-                            {isMeal ? 'ห้อง+อาหาร' : 'ห้องอย่างเดียว'}
+                          <span className="truncate">{room.name}</span>
+                          <span className="inline-flex items-center gap-1 text-[10px] font-medium shrink-0 text-rose-700">
+                            {hasMeals && <Utensils className="w-2.5 h-2.5 text-orange-600" />}
+                            {hasExtraBed && <BedDouble className="w-2.5 h-2.5 text-rose-700" />}
+                            <span>จองแล้ว</span>
                           </span>
                         </div>
-                        <div className="text-[10px] opacity-80 truncate pl-4">
-                          {booking.guestName}
-                        </div>
+                        {booking && (
+                          <div className="text-[10px] opacity-80 truncate">
+                            {booking.guestName}
+                            {hasExtraBed ? ` · +${booking.extraBedCount || 1} เตียง` : ''}
+                          </div>
+                        )}
                       </button>
                     );
                   })}
@@ -563,7 +573,7 @@ export const MonthlyCalendar: React.FC<MonthlyCalendarProps> = ({
             </div>
             <button
               type="button"
-              onClick={() => onQuickBook(selectedMobileDay)}
+              onClick={() => handleAvailableRoomClick(selectedMobileDay)}
               className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-2 bg-teal-700 text-white text-xs font-semibold rounded-lg whitespace-nowrap"
             >
               <Plus className="w-4 h-4" />
@@ -572,66 +582,57 @@ export const MonthlyCalendar: React.FC<MonthlyCalendarProps> = ({
           </div>
 
           <div className="space-y-2">
-            {mobileDayInfo.statuses
-              .filter((s) =>
-                filters.category === 'all' ? true : s.booking?.category === filters.category,
-              )
-              .map(({ room, booking }) => {
-                if (!booking) {
-                  return (
-                    <button
-                      key={room.id}
-                      type="button"
-                      onClick={() => onQuickBook(selectedMobileDay, room.id)}
-                      className="w-full min-h-[52px] p-3 rounded-lg border border-emerald-200 bg-emerald-50 flex items-center justify-between gap-3 text-left"
-                    >
-                      <div>
-                        <div className="text-sm font-semibold text-emerald-950">{room.name}</div>
-                        <div className="text-xs text-emerald-700">
-                          {room.roomType} · ว่าง พร้อมขาย (แตะเพื่อจอง)
-                        </div>
-                      </div>
-                      <span className="text-xs font-semibold text-emerald-800 whitespace-nowrap">
-                        + จองห้องนี้
-                      </span>
-                    </button>
-                  );
-                }
-
-                const isMeal = booking.category === 'room_with_meal';
+            {mobileDayInfo.statuses.map(({ room, isBooked, booking }) => {
+              if (!isBooked) {
                 return (
                   <button
-                    key={`${room.id}-${booking.id}`}
+                    key={room.id}
                     type="button"
-                    onClick={() => onSelectBooking(booking)}
-                    className={`w-full min-h-[56px] p-3 rounded-lg border flex items-center justify-between gap-3 text-left ${
-                      isMeal
-                        ? 'border-orange-200 bg-orange-50 text-orange-950'
-                        : 'border-rose-200 bg-rose-50 text-rose-950'
-                    }`}
+                    onClick={() => handleAvailableRoomClick(selectedMobileDay, room.id)}
+                    className="w-full min-h-[52px] p-3 rounded-lg border border-emerald-200 bg-emerald-50 flex items-center justify-between gap-3 text-left"
                   >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 text-sm font-semibold">
-                        {isMeal ? (
-                          <Utensils className="w-4 h-4 text-orange-600 shrink-0" />
-                        ) : (
-                          <BedDouble className="w-4 h-4 text-rose-600 shrink-0" />
-                        )}
-                        <span className="truncate">{room.name}</span>
-                        <span className="text-xs font-medium opacity-80 shrink-0">
-                          · {CATEGORY_LABELS[booking.category]}
-                        </span>
-                      </div>
-                      <div className="text-xs opacity-80 truncate mt-0.5">
-                        ผู้เข้าพัก: {booking.guestName} ({booking.bookingChannel})
+                    <div>
+                      <div className="text-sm font-semibold text-emerald-950">{room.name}</div>
+                      <div className="text-xs text-emerald-700">
+                        {room.roomType} · ว่าง พร้อมขาย
                       </div>
                     </div>
-                    <span className="text-xs font-semibold shrink-0 underline underline-offset-2">
-                      ดูรายละเอียด
+                    <span className="text-xs font-semibold text-emerald-800 whitespace-nowrap">
+                      + จองห้องนี้
                     </span>
                   </button>
                 );
-              })}
+              }
+
+              return (
+                <button
+                  key={`${room.id}-${booking?.id || selectedMobileDay}`}
+                  type="button"
+                  onClick={() => handleBookedRoomClick(booking)}
+                  className="w-full min-h-[56px] p-3 rounded-lg border border-rose-200 bg-rose-50 text-rose-950 flex items-center justify-between gap-3 text-left"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 text-sm font-semibold">
+                      <span className="truncate">{room.name}</span>
+                      <span className="text-xs font-medium text-rose-700 shrink-0">· จองแล้ว</span>
+                    </div>
+                    {booking ? (
+                      <div className="text-xs opacity-80 truncate mt-0.5">
+                        ผู้เข้าพัก: {booking.guestName}
+                        {booking.extraBed ? ` · เตียงเสริม ${booking.extraBedCount || 1} เตียง` : ''}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-rose-700 mt-0.5">
+                        ไม่ว่าง (เข้าสู่ระบบพนักงานเพื่อดูรายละเอียด)
+                      </div>
+                    )}
+                  </div>
+                  <span className="text-xs font-semibold shrink-0 underline underline-offset-2">
+                    {isAuthenticated ? 'ดูรายละเอียด' : 'เข้าสู่ระบบ'}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>

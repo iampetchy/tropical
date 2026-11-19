@@ -14,7 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import {
-  CATEGORY_LABELS,
+  getNormalizedBookingMeals,
   PAYMENT_STATUS_LABELS,
   type Booking,
 } from '../types/resort';
@@ -40,6 +40,9 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
 
   const nights = getNightsCount(booking.checkIn, booking.checkOut);
   const isCancelled = booking.status === 'cancelled';
+  const { breakfastItems, dinnerItems } = getNormalizedBookingMeals(booking);
+  const hasAnyMeals =
+    breakfastItems.length > 0 || dinnerItems.length > 0 || Boolean(booking.mealNotes);
 
   const handleConfirmCancel = async () => {
     setCancelling(true);
@@ -89,7 +92,7 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
 
         {/* Body */}
         <div className="p-6 overflow-y-auto space-y-5">
-          {/* Status / Dates / Rooms Summary */}
+          {/* Dates & Rooms + Extra Bed */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
               <div className="flex items-center gap-2 text-xs font-medium text-slate-500 mb-1.5">
@@ -106,22 +109,17 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
 
             <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
               <div className="flex items-center gap-2 text-xs font-medium text-slate-500 mb-1.5">
-                {booking.category === 'room_with_meal' ? (
-                  <Utensils className="w-4 h-4 text-orange-600" />
-                ) : (
-                  <BedDouble className="w-4 h-4 text-rose-600" />
-                )}
-                <span>ห้องพักและประเภทการจอง</span>
+                <BedDouble className="w-4 h-4 text-teal-700" />
+                <span>ห้องพักและเตียงเสริม</span>
               </div>
               <p className="text-sm font-semibold text-slate-900">
                 {booking.roomNames.join(', ')}
               </p>
-              <p
-                className={`text-xs font-medium mt-1 ${
-                  booking.category === 'room_with_meal' ? 'text-orange-700' : 'text-rose-700'
-                }`}
-              >
-                {CATEGORY_LABELS[booking.category]}
+              <p className="text-xs text-slate-600 mt-1 tabular-nums">
+                เตียงเสริม:{' '}
+                {booking.extraBed
+                  ? `รับ (${booking.extraBedCount || 1} เตียง)`
+                  : 'ไม่รับเตียงเสริม'}
               </p>
             </div>
           </div>
@@ -162,35 +160,44 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
           </div>
 
           {/* Meal Details */}
-          {booking.category === 'room_with_meal' && (
-            <div className="p-4 rounded-lg bg-orange-50/70 border border-orange-200 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-sm font-semibold text-orange-900">
-                  <Utensils className="w-4 h-4 text-orange-600" />
-                  <span>รายละเอียดอาหาร</span>
-                </div>
+          <div className="p-4 rounded-lg bg-orange-50/60 border border-orange-200 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-sm font-semibold text-orange-900">
+                <Utensils className="w-4 h-4 text-orange-600" />
+                <span>รายการอาหารที่เลือก</span>
+              </div>
+              {hasAnyMeals && (
                 <span className="text-xs font-medium text-orange-800 tabular-nums">
                   จำนวน {booking.mealSetsCount} ชุด
                 </span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm text-slate-800">
-                <div>
-                  <span className="text-slate-500">อาหารเช้า: </span>
-                  <span className="font-medium">{booking.mealBreakfast || '-'}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500">อาหารเย็น/หมูกระทะ: </span>
-                  <span className="font-medium">{booking.mealDinner || '-'}</span>
-                </div>
-              </div>
-              {booking.mealNotes && (
-                <p className="text-sm text-orange-900 pt-1 border-t border-orange-200/70">
-                  <span className="font-medium">หมายเหตุอาหาร/แพ้อาหาร: </span>
-                  {booking.mealNotes}
-                </p>
               )}
             </div>
-          )}
+
+            {hasAnyMeals ? (
+              <div className="space-y-1.5 text-sm text-slate-800">
+                <div>
+                  <span className="text-slate-500">อาหารเช้า: </span>
+                  <span className="font-medium">
+                    {breakfastItems.length > 0 ? breakfastItems.join(', ') : 'ไม่ได้เลือก'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500">อาหารเย็น: </span>
+                  <span className="font-medium">
+                    {dinnerItems.length > 0 ? dinnerItems.join(', ') : 'ไม่ได้เลือก'}
+                  </span>
+                </div>
+                {booking.mealNotes && (
+                  <p className="text-sm text-orange-900 pt-1 border-t border-orange-200/70">
+                    <span className="font-medium">หมายเหตุอาหาร/แพ้อาหาร: </span>
+                    {booking.mealNotes}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500">ไม่มีรายการอาหารที่เลือกไว้</p>
+            )}
+          </div>
 
           {/* Special Request */}
           <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">

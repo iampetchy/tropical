@@ -9,19 +9,21 @@ import {
 } from 'lucide-react';
 import {
   BOOKING_CHANNELS,
-  BREAKFAST_OPTIONS,
-  DINNER_OPTIONS,
+  DEFAULT_BREAKFAST_OPTIONS,
+  DEFAULT_DINNER_OPTIONS,
+  getNormalizedBookingMeals,
   PAYMENT_STATUS_LABELS,
   type Booking,
-  type BookingCategory,
   type BookingFormInput,
   type PaymentStatus,
+  type ResortSettings,
   type Room,
 } from '../types/resort';
 import { addDaysISO, doDateRangesOverlap, getNightsCount, toISODate } from '../utils/dateUtils';
 
 interface BookingFormModalProps {
   isOpen: boolean;
+  settings: ResortSettings | null;
   rooms: Room[];
   bookings: Booking[];
   initialCheckIn?: string;
@@ -33,6 +35,7 @@ interface BookingFormModalProps {
 
 export const BookingFormModal: React.FC<BookingFormModalProps> = ({
   isOpen,
+  settings,
   rooms,
   bookings,
   initialCheckIn,
@@ -47,11 +50,12 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
   const [checkIn, setCheckIn] = useState(defaultCheckIn);
   const [checkOut, setCheckOut] = useState(defaultCheckOut);
   const [selectedRoomIds, setSelectedRoomIds] = useState<string[]>(initialRoomIds || []);
-  const [category, setCategory] = useState<BookingCategory>('room_only');
-  const [mealBreakfast, setMealBreakfast] = useState<string>(BREAKFAST_OPTIONS[0]);
-  const [mealDinner, setMealDinner] = useState<string>(DINNER_OPTIONS[0]);
+  const [mealBreakfastItems, setMealBreakfastItems] = useState<string[]>([]);
+  const [mealDinnerItems, setMealDinnerItems] = useState<string[]>([]);
   const [mealSetsCount, setMealSetsCount] = useState<number>(2);
   const [mealNotes, setMealNotes] = useState<string>('');
+  const [extraBed, setExtraBed] = useState<boolean>(false);
+  const [extraBedCount, setExtraBedCount] = useState<number>(1);
   const [guestName, setGuestName] = useState<string>('');
   const [guestPhone, setGuestPhone] = useState<string>('');
   const [bookingChannel, setBookingChannel] = useState<string>(BOOKING_CHANNELS[0]);
@@ -60,19 +64,45 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
+  const configuredBreakfastOptions = useMemo(() => {
+    const base =
+      settings?.breakfastOptions && settings.breakfastOptions.length > 0
+        ? settings.breakfastOptions
+        : DEFAULT_BREAKFAST_OPTIONS;
+    const merged = [...base];
+    for (const item of mealBreakfastItems) {
+      if (!merged.includes(item)) merged.push(item);
+    }
+    return merged;
+  }, [settings?.breakfastOptions, mealBreakfastItems]);
+
+  const configuredDinnerOptions = useMemo(() => {
+    const base =
+      settings?.dinnerOptions && settings.dinnerOptions.length > 0
+        ? settings.dinnerOptions
+        : DEFAULT_DINNER_OPTIONS;
+    const merged = [...base];
+    for (const item of mealDinnerItems) {
+      if (!merged.includes(item)) merged.push(item);
+    }
+    return merged;
+  }, [settings?.dinnerOptions, mealDinnerItems]);
+
   useEffect(() => {
     if (!isOpen) return;
     setFormError(null);
 
     if (editingBooking) {
+      const { breakfastItems, dinnerItems } = getNormalizedBookingMeals(editingBooking);
       setCheckIn(editingBooking.checkIn);
       setCheckOut(editingBooking.checkOut);
       setSelectedRoomIds(editingBooking.roomIds);
-      setCategory(editingBooking.category);
-      setMealBreakfast(editingBooking.mealBreakfast || BREAKFAST_OPTIONS[0]);
-      setMealDinner(editingBooking.mealDinner || DINNER_OPTIONS[0]);
-      setMealSetsCount(editingBooking.mealSetsCount || 2);
+      setMealBreakfastItems(breakfastItems);
+      setMealDinnerItems(dinnerItems);
+      setMealSetsCount(editingBooking.mealSetsCount ?? 2);
       setMealNotes(editingBooking.mealNotes || '');
+      setExtraBed(Boolean(editingBooking.extraBed));
+      setExtraBedCount(editingBooking.extraBedCount === 2 ? 2 : 1);
       setGuestName(editingBooking.guestName);
       setGuestPhone(editingBooking.guestPhone);
       setBookingChannel(editingBooking.bookingChannel || BOOKING_CHANNELS[0]);
@@ -83,11 +113,12 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
       setCheckIn(start);
       setCheckOut(addDaysISO(start, 1));
       setSelectedRoomIds(initialRoomIds || []);
-      setCategory('room_only');
-      setMealBreakfast(BREAKFAST_OPTIONS[0]);
-      setMealDinner(DINNER_OPTIONS[0]);
+      setMealBreakfastItems([]);
+      setMealDinnerItems([]);
       setMealSetsCount(2);
       setMealNotes('');
+      setExtraBed(false);
+      setExtraBedCount(1);
       setGuestName('');
       setGuestPhone('');
       setBookingChannel(BOOKING_CHANNELS[0]);
@@ -106,7 +137,6 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
 
   const nights = getNightsCount(checkIn, checkOut);
 
-  // Determine which rooms are already occupied for the currently chosen [checkIn, checkOut)
   const occupiedRoomMap = useMemo(() => {
     const map = new Map<string, Booking>();
     if (!checkIn || !checkOut || nights <= 0) return map;
@@ -123,7 +153,6 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
     return map;
   }, [bookings, checkIn, checkOut, nights, editingBooking]);
 
-  // If user changes dates and a previously selected room becomes occupied, unselect it cleanly
   useEffect(() => {
     if (occupiedRoomMap.size === 0) return;
     setSelectedRoomIds((prev) => prev.filter((id) => !occupiedRoomMap.has(id)));
@@ -135,6 +164,18 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
     if (occupiedRoomMap.has(roomId)) return;
     setSelectedRoomIds((prev) =>
       prev.includes(roomId) ? prev.filter((id) => id !== roomId) : [...prev, roomId],
+    );
+  };
+
+  const toggleBreakfastItem = (item: string) => {
+    setMealBreakfastItems((prev) =>
+      prev.includes(item) ? prev.filter((x) => x !== item) : [...prev, item],
+    );
+  };
+
+  const toggleDinnerItem = (item: string) => {
+    setMealDinnerItems((prev) =>
+      prev.includes(item) ? prev.filter((x) => x !== item) : [...prev, item],
     );
   };
 
@@ -173,11 +214,12 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
           checkIn,
           checkOut,
           roomIds: selectedRoomIds,
-          category,
-          mealBreakfast,
-          mealDinner,
+          mealBreakfastItems,
+          mealDinnerItems,
           mealSetsCount,
           mealNotes,
+          extraBed,
+          extraBedCount: extraBed ? extraBedCount : 0,
           guestName,
           guestPhone,
           bookingChannel,
@@ -187,8 +229,6 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
         editingBooking,
       );
     } catch (err) {
-      // DoubleBookingError is handled by parent with the Red Alert Modal;
-      // local validation errors show inline here.
       if (err instanceof Error && err.name !== 'DoubleBookingError') {
         setFormError(err.message);
       }
@@ -339,112 +379,150 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
             )}
           </section>
 
-          {/* 3. Category */}
+          {/* 3. Extra Bed (Yes/No + 1 or 2 beds) */}
           <section className="space-y-3 pt-2 border-t border-slate-100">
-            <h3 className="text-sm font-semibold text-slate-900">3. Category การจอง</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setCategory('room_only')}
-                className={`min-h-[56px] p-3.5 rounded-lg border text-left transition-colors flex items-center gap-3 ${
-                  category === 'room_only'
-                    ? 'bg-rose-50 border-rose-500 text-rose-900 ring-1 ring-rose-500'
-                    : 'bg-white border-slate-200 hover:border-slate-300 text-slate-700'
-                }`}
-              >
-                <BedDouble
-                  className={`w-5 h-5 shrink-0 ${
-                    category === 'room_only' ? 'text-rose-600' : 'text-slate-400'
+            <div className="flex items-center gap-2">
+              <BedDouble className="w-4 h-4 text-teal-700" />
+              <h3 className="text-sm font-semibold text-slate-900">
+                3. เตียงเสริม (Extra Bed)
+              </h3>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setExtraBed(false)}
+                  className={`min-h-[44px] px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                    !extraBed
+                      ? 'bg-teal-50 border-teal-600 text-teal-900 ring-1 ring-teal-600'
+                      : 'bg-white border-slate-200 hover:border-slate-300 text-slate-700'
                   }`}
-                />
-                <div>
-                  <div className="text-sm font-semibold">ห้องอย่างเดียว (Room Only)</div>
-                  <div className="text-xs text-slate-500">ไม่รวมแพ็กเกจอาหาร</div>
-                </div>
-              </button>
+                >
+                  ไม่รับ (No)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExtraBed(true);
+                    if (extraBedCount !== 1 && extraBedCount !== 2) {
+                      setExtraBedCount(1);
+                    }
+                  }}
+                  className={`min-h-[44px] px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                    extraBed
+                      ? 'bg-teal-50 border-teal-600 text-teal-900 ring-1 ring-teal-600'
+                      : 'bg-white border-slate-200 hover:border-slate-300 text-slate-700'
+                  }`}
+                >
+                  รับเตียงเสริม (Yes)
+                </button>
+              </div>
 
-              <button
-                type="button"
-                onClick={() => setCategory('room_with_meal')}
-                className={`min-h-[56px] p-3.5 rounded-lg border text-left transition-colors flex items-center gap-3 ${
-                  category === 'room_with_meal'
-                    ? 'bg-orange-50 border-orange-500 text-orange-900 ring-1 ring-orange-500'
-                    : 'bg-white border-slate-200 hover:border-slate-300 text-slate-700'
-                }`}
-              >
-                <Utensils
-                  className={`w-5 h-5 shrink-0 ${
-                    category === 'room_with_meal' ? 'text-orange-600' : 'text-slate-400'
-                  }`}
-                />
-                <div>
-                  <div className="text-sm font-semibold">ห้องพร้อมอาหาร (Room + Meal)</div>
-                  <div className="text-xs text-slate-500">ระบุอาหารเช้า / เซ็ตอาหารเย็น / แพ้อาหาร</div>
+              {extraBed && (
+                <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
+                  <div className="text-xs font-medium text-slate-700">จำนวนเตียงเสริม</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[1, 2].map((count) => (
+                      <button
+                        key={count}
+                        type="button"
+                        onClick={() => setExtraBedCount(count)}
+                        className={`min-h-[40px] px-3 py-1.5 rounded-lg border text-sm font-semibold tabular-nums transition-colors ${
+                          extraBedCount === count
+                            ? 'bg-teal-700 border-teal-700 text-white'
+                            : 'bg-white border-slate-300 text-slate-700 hover:border-teal-400'
+                        }`}
+                      >
+                        {count} เตียง
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </button>
+              )}
             </div>
           </section>
 
-          {/* 4. Meal Selection */}
-          {category === 'room_with_meal' && (
-            <section className="p-4 rounded-lg bg-orange-50/60 border border-orange-200 space-y-4">
-              <h3 className="text-sm font-semibold text-orange-950">
-                4. ตัวเลือกอาหาร (Meal Selection)
-              </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <label htmlFor="bk-breakfast" className="block text-xs font-medium text-slate-700 mb-1.5">
-                    อาหารเช้า
-                  </label>
-                  <select
-                    id="bk-breakfast"
-                    value={mealBreakfast}
-                    onChange={(e) => setMealBreakfast(e.target.value)}
-                    className="w-full min-h-[42px] px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-600"
-                  >
-                    {BREAKFAST_OPTIONS.map((opt) => (
-                      <option key={opt} value={opt}>
-                        {opt}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+          {/* 4. Multi-select Meal Checkboxes */}
+          <section className="p-4 rounded-lg bg-orange-50/50 border border-orange-200 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Utensils className="w-4 h-4 text-orange-600" />
+                <h3 className="text-sm font-semibold text-orange-950">
+                  4. ตัวเลือกอาหาร (เลือกได้หลายรายการ)
+                </h3>
+              </div>
+              <span className="text-xs text-slate-500">
+                เพิ่มรายการอาหารเช้า/เย็นได้ที่เมนู &ldquo;ตั้งค่ารีสอร์ท&rdquo;
+              </span>
+            </div>
 
-                <div>
-                  <label htmlFor="bk-dinner" className="block text-xs font-medium text-slate-700 mb-1.5">
-                    อาหารเย็น / หมูกระทะ
-                  </label>
-                  <select
-                    id="bk-dinner"
-                    value={mealDinner}
-                    onChange={(e) => setMealDinner(e.target.value)}
-                    className="w-full min-h-[42px] px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-600"
-                  >
-                    {DINNER_OPTIONS.map((opt) => (
-                      <option key={opt} value={opt}>
-                        {opt}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label htmlFor="bk-meal-sets" className="block text-xs font-medium text-slate-700 mb-1.5">
-                    จำนวนชุดอาหาร
-                  </label>
-                  <input
-                    id="bk-meal-sets"
-                    type="number"
-                    min={0}
-                    max={100}
-                    value={mealSetsCount}
-                    onChange={(e) => setMealSetsCount(Number(e.target.value))}
-                    className="w-full min-h-[42px] px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm tabular-nums text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-600"
-                  />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Breakfast Checkboxes */}
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-slate-700">รายการอาหารเช้า</div>
+                <div className="space-y-2 bg-white p-3 rounded-lg border border-orange-200/80">
+                  {configuredBreakfastOptions.map((item) => {
+                    const checked = mealBreakfastItems.includes(item);
+                    return (
+                      <label
+                        key={item}
+                        className="flex items-center gap-2.5 text-sm text-slate-800 cursor-pointer select-none py-0.5"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleBreakfastItem(item)}
+                          className="w-4 h-4 accent-teal-700 rounded cursor-pointer"
+                        />
+                        <span>{item}</span>
+                      </label>
+                    );
+                  })}
                 </div>
               </div>
 
+              {/* Dinner Checkboxes */}
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-slate-700">รายการอาหารเย็น</div>
+                <div className="space-y-2 bg-white p-3 rounded-lg border border-orange-200/80">
+                  {configuredDinnerOptions.map((item) => {
+                    const checked = mealDinnerItems.includes(item);
+                    return (
+                      <label
+                        key={item}
+                        className="flex items-center gap-2.5 text-sm text-slate-800 cursor-pointer select-none py-0.5"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleDinnerItem(item)}
+                          className="w-4 h-4 accent-teal-700 rounded cursor-pointer"
+                        />
+                        <span>{item}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
+                <label htmlFor="bk-meal-sets" className="block text-xs font-medium text-slate-700 mb-1.5">
+                  จำนวนชุดอาหาร
+                </label>
+                <input
+                  id="bk-meal-sets"
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={mealSetsCount}
+                  onChange={(e) => setMealSetsCount(Number(e.target.value))}
+                  className="w-full min-h-[42px] px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm tabular-nums text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-600"
+                />
+              </div>
+
+              <div className="sm:col-span-2">
                 <label htmlFor="bk-meal-notes" className="block text-xs font-medium text-slate-700 mb-1.5">
                   หมายเหตุอาหาร / การแพ้อาหาร
                 </label>
@@ -458,14 +536,12 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
                   className="w-full min-h-[42px] px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-600"
                 />
               </div>
-            </section>
-          )}
+            </div>
+          </section>
 
           {/* 5. Guest Info */}
           <section className="space-y-3 pt-2 border-t border-slate-100">
-            <h3 className="text-sm font-semibold text-slate-900">
-              {category === 'room_with_meal' ? '5.' : '4.'} ข้อมูลผู้เข้าพัก
-            </h3>
+            <h3 className="text-sm font-semibold text-slate-900">5. ข้อมูลผู้เข้าพัก</h3>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label htmlFor="bk-guest-name" className="block text-xs font-medium text-slate-600 mb-1.5">
@@ -523,7 +599,7 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
           <section className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-slate-100">
             <div className="sm:col-span-2">
               <label htmlFor="bk-special-req" className="block text-sm font-semibold text-slate-900 mb-1.5">
-                {category === 'room_with_meal' ? '6.' : '5.'} Special Request (คำขอพิเศษ)
+                6. Special Request (คำขอพิเศษ)
               </label>
               <textarea
                 id="bk-special-req"
@@ -531,14 +607,14 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
                 maxLength={1000}
                 value={specialRequest}
                 onChange={(e) => setSpecialRequest(e.target.value)}
-                placeholder="เช่น ขอเตียงเสริม, เตรียมเค้กวันเกิด, ขอห้องใกล้สระน้ำ, รถรับ-ส่งสนามบิน"
+                placeholder="เช่น เตรียมเค้กวันเกิด, ขอห้องใกล้สระน้ำ, รถรับ-ส่งสนามบิน"
                 className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-600"
               />
             </div>
 
             <div>
               <span className="block text-sm font-semibold text-slate-900 mb-1.5">
-                {category === 'room_with_meal' ? '7.' : '6.'} สถานะการชำระเงิน
+                7. สถานะการชำระเงิน
               </span>
               <div className="space-y-2">
                 {(['pending', 'deposit', 'paid'] as PaymentStatus[]).map((statusKey) => (

@@ -2,7 +2,7 @@
   "entities": {
     "ResortSettings": {
       "title": "ResortSettings",
-      "description": "Basic resort configuration including resort name and standard check-in/out times.",
+      "description": "Basic resort configuration including resort name, check-in/out times, and customizable breakfast/dinner menus.",
       "type": "object",
       "properties": {
         "resortName": {
@@ -28,6 +28,14 @@
           "maxLength": 20,
           "description": "Standard check-out time (e.g. 12:00)."
         },
+        "breakfastOptions": {
+          "type": "array",
+          "description": "Configurable list of breakfast options (up to 30 items)."
+        },
+        "dinnerOptions": {
+          "type": "array",
+          "description": "Configurable list of dinner options (up to 30 items)."
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time",
@@ -51,6 +59,8 @@
         "resortSubtitle",
         "checkInTime",
         "checkOutTime",
+        "breakfastOptions",
+        "dinnerOptions",
         "updatedAt",
         "updatedByUid",
         "updatedByName"
@@ -119,7 +129,7 @@
     },
     "Booking": {
       "title": "Booking",
-      "description": "Resort room reservation with multi-room support, meal options, guest info, and staff audit trail.",
+      "description": "Resort room reservation with multi-room support, multi-select meal checkboxes, extra bed options, guest info, and staff audit trail.",
       "type": "object",
       "properties": {
         "resortId": {
@@ -147,18 +157,13 @@
           "type": "array",
           "description": "Snapshot of booked room names (1 to 20 rooms)."
         },
-        "category": {
-          "type": "string",
-          "enum": ["room_only", "room_with_meal"],
-          "maxLength": 32
+        "mealBreakfastItems": {
+          "type": "array",
+          "description": "Selected breakfast items via checkboxes (0 to 30 items)."
         },
-        "mealBreakfast": {
-          "type": "string",
-          "maxLength": 100
-        },
-        "mealDinner": {
-          "type": "string",
-          "maxLength": 100
+        "mealDinnerItems": {
+          "type": "array",
+          "description": "Selected dinner items via checkboxes (0 to 30 items)."
         },
         "mealSetsCount": {
           "type": "integer"
@@ -166,6 +171,14 @@
         "mealNotes": {
           "type": "string",
           "maxLength": 500
+        },
+        "extraBed": {
+          "type": "boolean",
+          "description": "Whether extra bed is requested (Yes/No)."
+        },
+        "extraBedCount": {
+          "type": "integer",
+          "description": "Number of extra beds (0, 1, or 2)."
         },
         "guestName": {
           "type": "string",
@@ -235,11 +248,12 @@
         "checkOut",
         "roomIds",
         "roomNames",
-        "category",
-        "mealBreakfast",
-        "mealDinner",
+        "mealBreakfastItems",
+        "mealDinnerItems",
         "mealSetsCount",
         "mealNotes",
+        "extraBed",
+        "extraBedCount",
         "guestName",
         "guestPhone",
         "bookingChannel",
@@ -257,7 +271,7 @@
     },
     "RoomLock": {
       "title": "RoomLock",
-      "description": "Atomic per-room per-night lock preventing concurrent double bookings.",
+      "description": "Atomic per-room per-night lock preventing concurrent double bookings and powering public room availability calendar.",
       "type": "object",
       "properties": {
         "resortId": {
